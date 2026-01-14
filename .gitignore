@@ -1,26 +1,40 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
-/.pnp
+# --- 系統與開發工具相關 ---
+node_modules
+.DS_Store
+dist
+dist-ssr
+*.local
+.vscode/*
+!.vscode/extensions.json
+.idea
+.pnp
 .pnp.js
 
-# testing
-/coverage
-
-# production
-/build
-
-# misc
-.DS_Store
+# --- Firebase 與環境變數 (金鑰保護) ---
+.env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
-.env
+
+# --- 學校私密資料與原始檔 (絕對不傳 GitHub) ---
 課表資料核對表.xlsx
 parser/pdfs/
+src/data.json
 
+# --- Python 解析器環境與暫存 ---
+.venv
+venv
+ENV
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+
+# --- 日誌與測試 ---
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+coverage/

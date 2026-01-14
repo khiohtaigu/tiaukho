@@ -2,15 +2,39 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 這裡開始是強制覆蓋邏輯 */
 @layer base {
+  /* 使用 * 號代表所有元素，::before 和 ::after 代表所有裝飾性文字 */
   *, ::before, ::after {
-    /* 優先使用 Mac 宋體，次之 Windows 新細明體 */
+    /* 優先順序：Mac宋體 -> Google宋體 -> Windows新細明體 -> 襯線體備援 */
     font-family: "Songti TC", "Noto Serif TC", "PMingLiU", "新細明體", "SimSun", serif !important;
   }
 
   body {
-    @apply bg-[#f1f5f9];
+    margin: 0;
+    @apply bg-[#f1f5f9]; /* 確保背景是淡淡的灰藍色 */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  /* 針對按鈕和輸入框特別強化，因為瀏覽器有時會給它們預設字體 */
+  button, input, optgroup, select, textarea {
+    font-family: inherit !important;
+  }
+}
+
+/* 自定義捲軸（讓宋體介面更精緻） */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
