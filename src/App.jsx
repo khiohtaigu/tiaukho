@@ -26,19 +26,18 @@ const PERIODS = [
 ];
 
 const SIDEBAR_ORDER = ['國文', '英文', '數學', '自然科', '社會科', '藝能科', '本土語'];
-
-// --- 調整 1：藝能科精確排序 ---
 const DOMAIN_SUB_ORDER = {
   '自然科': ['物理', '化學', '生物', '地球科學', '半導體'],
-  '藝能科': ['音樂', '美術', '家政', '生活科技', '資訊科技', '健護', '體育', '全民國防', '輔導', '生命教育', '藝術生活'],
+  '藝能科': ['體育', '美術', '藝術與生活', '音樂', '輔導', '生命教育', '生活科技', '資訊科技', '健康與護理', '全民國防'],
   '社會科': ['歷史', '地理', '公民']
 };
 
-const SCHOOL_LIST = [
-  { id: 'fssh', name: '鳳山高級中學', password: 'fssh' }
-];
+const SCHOOL_LIST = [{ id: 'fssh', name: '鳳山高級中學', password: 'fssh' }];
 
 export default function App() {
+  // ----------------------------------------------------------------
+  // 1. Hooks (所有 Hook 必須在組件最頂端，嚴格禁止移動)
+  // ----------------------------------------------------------------
   const currentYear = new Date().getFullYear();
   const [landingStage, setLandingStage] = useState(0); 
   const [currentSchool, setCurrentSchool] = useState(null);
@@ -46,15 +45,14 @@ export default function App() {
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginPassword, setLoginPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  
   const [dbData, setDbData] = useState({ teachers: [], schedules: [], classes: [], constraints: [] });
+  
   const [activeView, setActiveView] = useState('schedule'); 
   const [sidebarMode, setSidebarMode] = useState('teacher');
   const [selectedTeacher, setSelectedTeacher] = useState(null);
   const [selectedClass, setSelectedClass] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [isEditMode, setIsEditMode] = useState(false); 
-  
   const [activeMainKey, setActiveMainKey] = useState(null); 
   const [activeSubKey, setActiveSubKey] = useState(null);
   const [gradeExpanded, setGradeExpanded] = useState({ '高1': true, '高2': true, '高3': true });
@@ -64,40 +62,24 @@ export default function App() {
   const [proposals, setProposals] = useState([]);
   const [draggedItem, setDraggedItem] = useState(null);
 
+  // ----------------------------------------------------------------
+  // 2. 資料衍生運算 (Memoized)
+  // ----------------------------------------------------------------
   const schedules = useMemo(() => dbData.schedules || [], [dbData.schedules]);
   const teachers = useMemo(() => [...(dbData.teachers || [])].sort((a, b) => (a.order || 999) - (b.order || 999)), [dbData.teachers]);
   const classes = useMemo(() => dbData.classes || [], [dbData.classes]);
 
-  // --- 調整 3 & 4：智慧歸類邏輯 (支援跨學科老師在多處出現) ---
   const sidebarData = useMemo(() => {
     const data = { core: {}, domains: {} };
-    
-    // 初始化
-    SIDEBAR_ORDER.forEach(key => {
-        if (key.includes('科')) data.domains[key] = {};
-        else data.core[key] = [];
-    });
-
+    SIDEBAR_ORDER.forEach(key => { if (key.includes('科')) data.domains[key] = {}; else data.core[key] = []; });
     teachers.forEach(t => {
       const targetBuckets = [];
-
-      // 判斷該老師該出現在哪些分類裡
       if (t.teachesNative || t.subject === '本土語') targetBuckets.push({ type: 'core', key: '本土語' });
-      
-      // 音樂與藝術生活老師應多處出現
       if (t.subject === '音樂') targetBuckets.push({ type: 'domain', domain: '藝能科', sub: '音樂' });
       if (t.subject === '藝術生活') targetBuckets.push({ type: 'domain', domain: '藝能科', sub: '藝術生活' });
-
-      // 原始主學科歸類
-      if (['自然科', '社會科', '藝能科'].includes(t.domain)) {
-        targetBuckets.push({ type: 'domain', domain: t.domain, sub: t.subject });
-      } else {
-        if (t.subject !== '本土語') targetBuckets.push({ type: 'core', key: t.subject });
-      }
-
-      // 執行歸類 (去重)
-      const uniqueBuckets = Array.from(new Set(targetBuckets.map(JSON.stringify))).map(JSON.parse);
-      uniqueBuckets.forEach(b => {
+      if (['自然科', '社會科', '藝能科'].includes(t.domain)) targetBuckets.push({ type: 'domain', domain: t.domain, sub: t.subject });
+      else { if (t.subject !== '本土語') targetBuckets.push({ type: 'core', key: t.subject }); }
+      Array.from(new Set(targetBuckets.map(JSON.stringify))).map(JSON.parse).forEach(b => {
         if (b.type === 'core') {
             if (!data.core[b.key]) data.core[b.key] = [];
             if (!data.core[b.key].find(x => x.id === t.id)) data.core[b.key].push(t);
@@ -108,8 +90,6 @@ export default function App() {
         }
       });
     });
-
-    // 依照指定的 DOMAIN_SUB_ORDER 進行最終排序
     Object.keys(data.domains).forEach(domainKey => {
       const subOrder = DOMAIN_SUB_ORDER[domainKey] || [];
       const sortedSubs = {};
@@ -117,7 +97,6 @@ export default function App() {
       Object.keys(data.domains[domainKey]).forEach(sub => { if (!subOrder.includes(sub)) sortedSubs[sub] = data.domains[domainKey][sub]; });
       data.domains[domainKey] = sortedSubs;
     });
-
     return data;
   }, [teachers]);
 
@@ -131,6 +110,9 @@ export default function App() {
     return groups;
   }, [classes]);
 
+  // ----------------------------------------------------------------
+  // 3. Firebase Effect
+  // ----------------------------------------------------------------
   useEffect(() => {
     if (!currentSchool) return;
     setIsLoading(true);
@@ -139,16 +121,15 @@ export default function App() {
         const data = docSnap.data();
         setDbData(data);
         setConstraints(data.constraints || []);
-      } else {
-        setDbData({ teachers: [], schedules: [], classes: [], constraints: [] });
-        setConstraints([]);
       }
       setIsLoading(false);
     });
     return () => unsub();
   }, [currentSchool]);
 
-  // --- 調整 2：禁區邏輯 (支援 101-105 連字號語法) ---
+  // ----------------------------------------------------------------
+  // 4. 邏輯函數
+  // ----------------------------------------------------------------
   const checkIsLocked = (classId, dayIdx, periodId) => {
     if (!classId || classId === "未知") return null;
     const gradeLetter = classId.charAt(0);
@@ -156,19 +137,51 @@ export default function App() {
       if (!rule.days?.includes(dayIdx) || !rule.periods?.includes(periodId)) return false;
       if (rule.type === 'all') return true;
       if (rule.type === 'grade') return String(rule.target) === String(gradeLetter);
-      
-      // 解析班級，加入範圍解析 (e.g., 101-105)
       const targetList = String(rule.target).split(/[,，、\s]+/).flatMap(part => {
           if (part.includes('-')) {
               const [start, end] = part.split('-').map(n => parseInt(n.trim()));
-              if (!isNaN(start) && !isNaN(end)) {
-                  return Array.from({ length: end - start + 1 }, (_, i) => String(start + i));
-              }
+              if (!isNaN(start) && !isNaN(end)) return Array.from({ length: end - start + 1 }, (_, i) => String(start + i));
           }
           return part.trim();
       });
       return targetList.includes(classId);
     });
+  };
+
+  const executeMove = async (moves) => {
+    setProposals([]); 
+    const nextSchedules = [...schedules];
+    moves.forEach(m => {
+      const idx = nextSchedules.findIndex(s => s.id === m.id);
+      if (idx !== -1) nextSchedules[idx] = { ...nextSchedules[idx], day: m.d, period: m.p };
+    });
+    setDbData(prev => ({ ...prev, schedules: nextSchedules }));
+    setIsEditMode(false);
+    try {
+      await setDoc(doc(db, "schools", currentSchool.id), { ...dbData, schedules: nextSchedules, constraints: constraints });
+    } catch (e) { alert("儲存失敗"); }
+  };
+
+  const analyzeMove = (source, targetDay, targetPeriod) => {
+    const srcDay = source.day; const srcPeriod = source.period;
+    const occupantInTarget = schedules.find(s => s.classId === source.classId && s.day === targetDay && s.period === targetPeriod);
+    const isT1BusyAtDest = schedules.some(s => s.teacherName === source.teacherName && s.day === targetDay && s.period === targetPeriod && s.id !== source.id);
+    const options = [];
+
+    if (!occupantInTarget && !isT1BusyAtDest) {
+      options.push({ type: 'MOVE', title: '直接移動', desc: `將課程移至 ${DAYS[targetDay]} ${PERIODS.find(p=>p.id===targetPeriod)?.label}`, impact: '雙方皆空堂，無衝突', color: 'blue', action: () => executeMove([{ id: source.id, d: targetDay, p: targetPeriod }]) });
+    } else if (occupantInTarget) {
+      const otherT = occupantInTarget.teacherName;
+      const isOtherTFreeAtSource = !schedules.some(s => s.teacherName === otherT && s.day === srcDay && s.period === srcPeriod);
+      if (isOtherTFreeAtSource) {
+        options.push({ type: 'SWAP', title: '兩課對調 (Swap)', desc: `與 ${otherT} 老師對調時段`, impact: '互換時段，無其餘衝突', color: 'indigo', action: () => executeMove([{ id: source.id, d: targetDay, p: targetPeriod }, { id: occupantInTarget.id, d: srcDay, p: srcPeriod }]) });
+      } else {
+        options.push({ type: 'CONFLICT', title: '偵測到調課衝突', desc: `無法直接對調：${otherT} 老師在原時段 (${DAYS[srcDay]} 第${srcPeriod > 4 ? srcPeriod - 1 : srcPeriod}節) 已有其他班級的課程。`, impact: '建議採取多角調動', color: 'red', disabled: true });
+      }
+    } else if (isT1BusyAtDest) {
+        options.push({ type: 'CONFLICT', title: '行程衝突', desc: `${source.teacherName} 老師在目標時段已有其他課。`, impact: '無法移動', color: 'red', disabled: true });
+    }
+    setProposals(options);
   };
 
   const handleFileUpload = (e) => {
@@ -184,11 +197,9 @@ export default function App() {
         const dayMap = { '週一': 0, '週二': 1, '週三': 2, '週四': 3, '週五': 4 };
         const periodMap = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 6, 6: 7, 7: 8, 8: 9 };
         const periodLabelMap = { '第1節': 1, '第2節': 2, '第3節': 3, '第4節': 4, '第5節': 6, '第6節': 7, '第7節': 8, '第8節': 9 };
-
         workbook.SheetNames.forEach(sheetName => {
           const json = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
           if (sheetName.includes("本土語")) json.forEach(r => { if(r['老師姓名']) nativeTeachersNames.add(String(r['老師姓名']).trim()); });
-          
           if (sheetName === "禁區設定") {
             json.forEach((row, idx) => {
               const typeRaw = String(row['類型'] || ''); if (!typeRaw) return;
@@ -201,8 +212,7 @@ export default function App() {
             });
           } else {
             json.forEach(row => {
-              const tName = String(row['老師姓名'] || '').trim();
-              if (!tName || tName === 'nan') return;
+              const tName = String(row['老師姓名'] || '').trim(); if (!tName || tName === 'nan') return;
               if (!teacherCache[tName]) {
                 const adminRole = String(row['行政職稱'] || '');
                 teacherCache[tName] = { id: `T${newTeachers.length+1}`, name: tName, order: parseInt(row['編號'])||999, domain: String(row['領域']||''), subject: String(row['學科']||''), adminRole: adminRole==='nan'?'':adminRole, isAdjunct: adminRole.includes('兼課'), isHomeroom: row['是否導師']==='是', teachesNative: nativeTeachersNames.has(tName) };
@@ -212,8 +222,7 @@ export default function App() {
               if (d!==undefined && p!==undefined) {
                 const key = `${tName}-${d}-${p}`;
                 if (!scheduleCheck.has(key)) {
-                  const cId = String(row['班級']||'').trim();
-                  if (cId && cId !== '未知' && cId !== 'nan') classSet.add(cId);
+                  const cId = String(row['班級']||'').trim(); if (cId && cId !== '未知' && cId !== 'nan') classSet.add(cId);
                   newSchedules.push({ id: `S${newSchedules.length}`, teacherName: tName, classId: cId, subject: String(row['表原始名稱'] || row['課表原始名稱'] || '課程'), day: d, period: p });
                   scheduleCheck.add(key);
                 }
@@ -234,6 +243,16 @@ export default function App() {
     else alert("密碼錯誤");
   };
 
+  const handleDrop = (targetDay, targetPeriod) => {
+    if (!draggedItem || !isEditMode) return;
+    const lockInfo = checkIsLocked(draggedItem.classId, targetDay, targetPeriod);
+    if (lockInfo) return alert(`無法調動：${lockInfo.desc}`);
+    analyzeMove(draggedItem, targetDay, targetPeriod);
+  };
+
+  const toggleMain = (key) => { setActiveMainKey(prev => prev === key ? null : key); setActiveSubKey(null); };
+  const toggleSub = (e, key) => { e.stopPropagation(); setActiveSubKey(prev => prev === key ? null : key); };
+
   const getCellData = (dayIdx, periodId) => {
     if (sidebarMode === 'teacher' && selectedTeacher) {
       return schedules.filter(s => s.teacherName === selectedTeacher.name && s.day === dayIdx && s.period === periodId).slice(0, 1);
@@ -243,63 +262,29 @@ export default function App() {
     return [];
   };
 
-  const analyzeMove = (source, targetDay, targetPeriod) => {
-    const srcDay = source.day; const srcPeriod = source.period;
-    const occupantInTarget = schedules.find(s => s.classId === source.classId && s.day === targetDay && s.period === targetPeriod);
-    const isT1BusyAtDest = schedules.some(s => s.teacherName === source.teacherName && s.day === targetDay && s.period === targetPeriod && s.id !== source.id);
-    const options = [];
-    if (!occupantInTarget && !isT1BusyAtDest) {
-      options.push({ type: 'MOVE', title: '直接移動', desc: `移至 ${DAYS[targetDay]} ${PERIODS.find(p=>p.id===targetPeriod)?.label}`, impact: '雙方皆空堂，無衝突', color: 'blue', action: () => executeMove([{ id: source.id, d: targetDay, p: targetPeriod }]) });
-    } else if (occupantInTarget) {
-      const otherT = occupantInTarget.teacherName;
-      const isOtherTFreeAtSource = !schedules.some(s => s.teacherName === otherT && s.day === srcDay && s.period === srcPeriod);
-      if (isOtherTFreeAtSource) {
-        options.push({ type: 'SWAP', title: '兩課對調 (Swap)', desc: `與 ${otherT} 老師對調時段`, impact: '互換時段', color: 'indigo', action: () => executeMove([{ id: source.id, d: targetDay, p: targetPeriod }, { id: occupantInTarget.id, d: srcDay, p: srcPeriod }]) });
-      } else {
-        options.push({ type: 'CONFLICT', title: '偵測到衝突', desc: `無法對調：${otherT} 老師在原時段已有其他課。`, impact: '建議採取多角調動', color: 'red', disabled: true });
-      }
-    } else if (isT1BusyAtDest) {
-        options.push({ type: 'CONFLICT', title: '行程衝突', desc: `${source.teacherName} 在目標時段已有其他課。`, impact: '無法直接移動', color: 'red', disabled: true });
-    }
-    setProposals(options);
-  };
-
-  const handleDrop = (targetDay, targetPeriod) => {
-    if (!draggedItem || !isEditMode) return;
-    const lockInfo = checkIsLocked(draggedItem.classId, targetDay, targetPeriod);
-    if (lockInfo) return alert(`無法調動：此時段為「${lockInfo.desc}」禁區。`);
-    analyzeMove(draggedItem, targetDay, targetPeriod);
-  };
-
-  const executeMove = async (moves) => {
-    const next = [...schedules];
-    moves.forEach(m => { const idx = next.findIndex(s => s.id === m.id); if (idx !== -1) next[idx] = { ...next[idx], day: m.d, period: m.p }; });
-    try { await setDoc(doc(db, "schools", currentSchool.id), { ...dbData, schedules: next, constraints: constraints }); setProposals([]); setIsEditMode(false); } catch (e) { alert("失敗"); }
-  };
-
-  const toggleMain = (key) => { setActiveMainKey(prev => prev === key ? null : key); setActiveSubKey(null); };
-  const toggleSub = (e, key) => { e.stopPropagation(); setActiveSubKey(prev => prev === key ? null : key); };
-
   const TeacherItem = ({ t }) => (
-    <button onClick={() => { setSelectedTeacher(t); setSelectedClass(null); setActiveView('schedule'); }} className={`w-full text-left px-4 py-3 text-lg flex items-center justify-between transition-all rounded-md mb-1 ${selectedTeacher?.id === t.id ? 'bg-[#1e40af] text-white font-black shadow-lg scale-[1.02]' : 'text-slate-600 hover:bg-slate-200 font-bold'}`}>
-      <div className="flex items-center gap-2 truncate font-serif">
+    <button onClick={() => { setSelectedTeacher(t); setSelectedClass(null); setActiveView('schedule'); }} className={`w-full text-left px-4 py-3 text-lg flex items-center justify-between transition-all rounded-md mb-1 ${selectedTeacher?.id === t.id ? 'bg-[#1e40af] text-white font-black shadow-lg' : 'text-slate-600 hover:bg-slate-200 hover:text-slate-800 font-bold'}`}>
+      <div className="flex items-center gap-2 truncate">
         <span className="truncate">{t.name}</span>
-        {t.adminRole && t.adminRole !== "兼課" && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-blue-700' : 'bg-blue-600 text-white'}`}>{t.adminRole}</span>}
+        {t.adminRole && t.adminRole !== "兼課" && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-blue-700' : 'bg-blue-100 text-blue-600'}`}>{t.adminRole}</span>}
         {t.isAdjunct && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-slate-700' : 'bg-slate-500 text-white'}`}>兼</span>}
         {t.isHomeroom && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-orange-600' : 'bg-orange-500 text-white'}`}>導</span>}
       </div>
     </button>
   );
 
+  // ----------------------------------------------------------------
+  // 5. 渲染邏輯
+  // ----------------------------------------------------------------
   if (landingStage === 0) {
     return (
-      <div className="flex flex-col h-screen w-full bg-[#fdfaf1] items-center justify-center overflow-hidden">
+      <div className="flex flex-col h-screen w-full bg-[#fdfaf1] items-center justify-center overflow-hidden font-sans">
         <div className="bg-white rounded-[4rem] shadow-2xl border-[6px] border-[#fbda8b] p-20 text-center animate-in zoom-in duration-700 max-w-4xl w-[90%]">
-          <h1 className="text-9xl font-black text-[#1e3a8a] mb-10 tracking-tighter leading-none font-sans">天才小調手</h1>
-          <p className="text-4xl font-bold text-[#3b82f6] tracking-[0.25em] mb-16 uppercase leading-none font-sans">智慧調課系統</p>
-          <button onClick={() => setLandingStage(1)} className="bg-[#fbda8b] hover:bg-[#f9cf6a] text-[#1e3a8a] px-14 py-7 rounded-[2.5rem] text-4xl font-black shadow-xl transition-all flex items-center gap-5 mx-auto active:scale-95 font-sans">點擊進入 <ArrowRight size={40} /></button>
+          <h1 className="text-9xl font-black text-[#1e3a8a] mb-10 tracking-tighter leading-none">天才小調手</h1>
+          <p className="text-4xl font-bold text-[#3b82f6] tracking-[0.25em] mb-16 uppercase leading-none">智慧調課系統</p>
+          <button onClick={() => setLandingStage(1)} className="bg-[#fbda8b] hover:bg-[#f9cf6a] text-[#1e3a8a] px-14 py-7 rounded-[2.5rem] text-4xl font-black shadow-xl transition-all flex items-center gap-5 mx-auto active:scale-95">點擊進入 <ArrowRight size={40} /></button>
         </div>
-        <div className="mt-12 text-slate-400 font-bold text-base tracking-widest uppercase font-sans">© {currentYear} 天才小調手 X 耀毅. All Rights Reserved.</div>
+        <div className="mt-12 text-slate-400 font-bold text-base tracking-widest uppercase">© {currentYear} 天才小調手 X 耀毅. All Rights Reserved.</div>
       </div>
     );
   }
@@ -322,9 +307,9 @@ export default function App() {
                 <div className="bg-white rounded-[3rem] p-12 max-w-md w-full shadow-2xl border-4 border-[#1e40af] relative">
                     <button onClick={() => setShowLoginModal(false)} className="absolute top-8 right-8 text-slate-300 hover:text-slate-600"><X size={32}/></button>
                     <div className="w-20 h-20 bg-blue-100 text-[#1e40af] rounded-3xl flex items-center justify-center mb-8 mx-auto"><Lock size={40}/></div>
-                    <h3 className="text-3xl font-black text-center text-slate-800 mb-4">管理員驗證</h3>
+                    <h3 className="text-3xl font-black text-center text-slate-800 mb-4 font-serif">管理員驗證</h3>
                     <input type="password" autoFocus className="w-full p-5 bg-slate-100 rounded-2xl border-none text-center text-2xl font-black focus:ring-4 mb-8" placeholder="••••" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()} />
-                    <button onClick={handleAdminLogin} className="w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl hover:bg-blue-900">確認登入</button>
+                    <button onClick={handleAdminLogin} className="w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl hover:bg-blue-900 font-serif">確認登入</button>
                 </div>
             </div>
         )}
@@ -340,13 +325,13 @@ export default function App() {
           <h1 className="text-2xl font-black flex items-center gap-2 tracking-tight leading-tight font-serif"><Calendar size={28} /> {currentSchool?.name}</h1>
         </div>
         <div className="flex p-2 bg-slate-100 border-b border-slate-300 shrink-0">
-          <button onClick={() => setSidebarMode('teacher')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'teacher' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500 hover:bg-slate-200'}`}>教師列表</button>
-          <button onClick={() => setSidebarMode('class')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'class' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500'}`}>班級列表</button>
+          <button onClick={() => setSidebarMode('teacher')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'teacher' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-800'}`}>教師列表</button>
+          <button onClick={() => setSidebarMode('class')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'class' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500 hover:bg-slate-200 hover:text-slate-800'}`}>班級列表</button>
         </div>
         <div className="p-4 border-b border-slate-300 bg-white shrink-0 font-serif"><div className="relative"><Search className="absolute left-3 top-3 text-slate-400" size={20} /><input type="text" placeholder="搜尋姓名、學科..." className="w-full pl-11 pr-4 py-3 bg-slate-100 border-none rounded-xl text-base font-bold outline-none placeholder-slate-400" onChange={(e) => setSearchTerm(e.target.value)} /></div></div>
         <div className="flex-1 overflow-y-auto custom-scrollbar p-3 bg-white font-serif">
           {sidebarMode === 'teacher' ? (
-            <div className="space-y-2 pb-10 font-serif">
+            <div className="space-y-2 pb-10">
               {SIDEBAR_ORDER.map(key => {
                 const members = sidebarData.core[key]; const domains = sidebarData.domains[key];
                 if (members) {
@@ -363,9 +348,9 @@ export default function App() {
                 if (domains) {
                   const isExpanded = activeMainKey === key || searchTerm !== '';
                   return (
-                    <div key={key} className="mb-2 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                    <div key={key} className="mb-2 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden shadow-sm font-sans">
                       <button onClick={() => toggleMain(key)} className="w-full flex items-center justify-between p-4 bg-slate-100/80 hover:bg-slate-200 transition-colors leading-none font-black text-lg text-indigo-900 font-sans"><div className="flex items-center gap-3 font-sans"><Layers size={20} className="text-indigo-600"/>{key}</div>{isExpanded ? <ChevronDown size={20}/> : <ChevronRight size={20}/>}</button>
-                      {isExpanded && <div className="p-2 space-y-1">{Object.entries(domains).map(([sub, subMembers]) => {
+                      {isExpanded && <div className="p-2 space-y-1 font-sans">{Object.entries(domains).map(([sub, subMembers]) => {
                         const isSubExp = activeSubKey === (key + sub) || searchTerm !== '';
                         const filteredSub = subMembers.filter(m => m.name.includes(searchTerm));
                         if (filteredSub.length === 0 && searchTerm) return null;
@@ -379,11 +364,11 @@ export default function App() {
               })}
             </div>
           ) : (
-            <div className="space-y-4 p-1 pb-10 font-serif">
+            <div className="space-y-4 p-1 pb-10">
               {Object.entries(groupedClasses).map(([grade, list]) => (
                 <div key={grade} className="mb-4 bg-white rounded-2xl border-2 border-slate-200 shadow-sm overflow-hidden font-sans">
                   <button onClick={() => setGradeExpanded(p => ({...p, [grade]: !p[grade]}))} className="w-full flex items-center justify-between p-5 bg-slate-50 font-black text-xl text-slate-800 leading-none">{grade} {gradeExpanded[grade] ? <ChevronDown /> : <ChevronRight />}</button>
-                  {gradeExpanded[grade] && <div className="p-4 grid grid-cols-3 gap-3">
+                  {gradeExpanded[grade] && <div className="p-4 grid grid-cols-3 gap-3 font-sans">
                     {list.map(c => <button key={c.id} onClick={() => { setSelectedClass(c); setSelectedTeacher(null); setActiveView('schedule'); }} className={`py-4 rounded-xl text-lg font-black border-2 ${selectedClass?.id === c.id ? 'bg-[#1e40af] text-white border-blue-700 shadow-lg scale-105' : 'bg-white text-slate-700 border-slate-100 hover:border-blue-300 hover:bg-blue-50'} leading-none`}>{c.id}</button>)}
                   </div>}
                 </div>
@@ -400,10 +385,10 @@ export default function App() {
         <header className="h-24 bg-white border-b-2 border-slate-200 flex items-center justify-between px-10 shadow-sm shrink-0 z-10 font-sans">
           <div className="flex items-center gap-6 leading-none">
             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-white shadow-xl ${sidebarMode === 'teacher' ? (selectedTeacher?.isAdjunct ? 'bg-slate-700' : 'bg-[#1e40af]') : 'bg-blue-800'}`}><User size={32}/></div>
-            <div className="leading-tight"><h2 className="text-3xl font-black text-slate-900 tracking-tight mb-1 leading-none">{sidebarMode === 'teacher' ? (selectedTeacher?.name || '請由左側選擇') : (selectedClass?.name || '請由左側選擇')} 的週課表</h2><span className="text-blue-600 font-bold text-base">{sidebarMode === 'teacher' ? (selectedTeacher?.subject ? `${selectedTeacher.subject}科` : '') : (selectedClass?.grade || '')}</span></div>
+            <div className="leading-tight"><h2 className="text-3xl font-black text-slate-900 tracking-tight mb-1 leading-none font-serif">{sidebarMode === 'teacher' ? (selectedTeacher?.name || '請由左側選擇') : (selectedClass?.name || '請由左側選擇')} 的週課表</h2><span className="text-blue-600 font-bold text-base">{sidebarMode === 'teacher' ? (selectedTeacher?.subject ? `${selectedTeacher.subject}科` : '') : (selectedClass?.grade || '')}</span></div>
           </div>
           <div className="flex gap-3 leading-none font-sans">
-            {isAdmin && <button onClick={() => setIsEditMode(!isEditMode)} className={`px-6 py-2.5 rounded-xl font-black text-sm border-2 leading-none ${isEditMode ? 'bg-orange-500 text-white border-orange-600 shadow-lg animate-pulse' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{isEditMode ? '停止調課' : '進行調課'}</button>}
+            {isAdmin && <button onClick={() => setIsEditMode(!isEditMode)} className={`px-6 py-2.5 rounded-xl font-black text-sm transition-all border-2 leading-none ${isEditMode ? 'bg-orange-500 text-white border-orange-600 shadow-lg animate-pulse' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{isEditMode ? '停止調課' : '進行調課'}</button>}
             <button onClick={() => setActiveView('schedule')} className={`px-6 py-2.5 rounded-xl font-black text-sm flex items-center gap-2 leading-none ${activeView === 'schedule' ? 'bg-[#1e40af] text-white shadow-lg' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><BookOpen size={18}/> 檢視課表</button>
             {isAdmin && <button onClick={() => setActiveView(activeView === 'settings' ? 'schedule' : 'settings')} className={`px-6 py-2.5 rounded-xl font-black text-sm flex items-center gap-2 leading-none ${activeView === 'settings' ? 'bg-[#1e40af] text-white shadow-lg' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><Settings size={18}/>排課設定</button>}
           </div>
@@ -416,20 +401,20 @@ export default function App() {
                 <h3 className="text-3xl font-black text-slate-800 flex items-center gap-3 mb-10 leading-none font-serif"><Plus size={32} className="text-blue-600"/> 新增排課禁區規則</h3>
                 <div className="space-y-8">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                    <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase">適用範圍</label>
-                      <div className="flex gap-2 font-sans">
-                        <button onClick={() => setNewRule({...newRule, type:'all'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='all'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>全校</button>
-                        <button onClick={() => setNewRule({...newRule, type:'grade'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='grade'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>特定年級</button>
-                        <button onClick={() => setNewRule({...newRule, type:'classes'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='classes'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>特定班級</button>
+                    <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase font-sans">適用範圍</label>
+                      <div className="flex gap-2">
+                        <button onClick={() => setNewRule({...newRule, type:'all'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none font-sans ${newRule.type==='all'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>全校</button>
+                        <button onClick={() => setNewRule({...newRule, type:'grade'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none font-sans ${newRule.type==='grade'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>特定年級</button>
+                        <button onClick={() => setNewRule({...newRule, type:'classes'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none font-sans ${newRule.type==='classes'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>特定班級群</button>
                       </div>
-                      <div className="mt-4">
+                      <div className="mt-4 font-sans">
                         {newRule.type === 'grade' && <select className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg font-sans" value={newRule.target} onChange={e=>setNewRule({...newRule, target:e.target.value})}><option value="1">高一年級</option><option value="2">高二年級</option><option value="3">高三年級</option></select>}
                         {newRule.type === 'classes' && <input type="text" placeholder="例如: 201、202-205" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg font-serif" value={newRule.classList} onChange={e=>setNewRule({...newRule, classList:e.target.value})} />}
                       </div>
                     </div>
-                    <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase leading-none">規則說明</label><input type="text" placeholder="說明" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg h-16 font-serif" value={newRule.desc} onChange={e=>setNewRule({...newRule, desc:e.target.value})} /></div>
+                    <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase leading-none font-sans">規則說明</label><input type="text" placeholder="說明" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg h-16 font-serif" value={newRule.desc} onChange={e=>setNewRule({...newRule, desc:e.target.value})} /></div>
                   </div>
-                  <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase leading-none">鎖定時段</label>
+                  <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase leading-none font-sans">鎖定時段</label>
                     <div className="flex flex-wrap gap-2 mb-6 leading-none font-sans">{DAYS.map((d, i) => <button key={d} onClick={() => setNewRule({...newRule, days: newRule.days.includes(i) ? newRule.days.filter(x=>x!==i) : [...newRule.days, i]})} className={`px-6 py-3 rounded-full border-2 font-black leading-none ${newRule.days.includes(i) ? 'bg-blue-600 border-blue-700 text-white shadow-md' : 'bg-white border-slate-100 text-slate-400'}`}>{d}</button>)}</div>
                     <div className="grid grid-cols-4 md:grid-cols-8 gap-2 leading-none font-sans">{PERIODS.filter(p=>!p.isRest).map((p) => <button key={p.id} onClick={() => setNewRule({...newRule, periods: newRule.periods.includes(p.id) ? newRule.periods.filter(x=>x!==p.id) : [...newRule.periods, p.id]})} className={`py-3 rounded-xl border-2 font-black leading-none ${newRule.periods.includes(p.id) ? 'bg-[#1e40af] border-blue-700 text-white shadow-lg' : 'bg-white border-slate-100 text-slate-400'}`}>{p.label}</button>)}</div></div>
                   <button onClick={async () => { 
@@ -444,7 +429,7 @@ export default function App() {
               <div className="space-y-4 mt-10 font-serif">
                 <h4 className="text-base font-black text-slate-400 uppercase ml-4 tracking-widest leading-none font-sans">已啟用規則 ({constraints.length})</h4>
                 {constraints.map(c => (
-                  <div key={c.id} className="bg-white p-8 rounded-[2rem] border-2 border-slate-200 flex justify-between items-center shadow-lg group hover:border-blue-200 transition-all leading-none">
+                  <div key={c.id} className="bg-white p-8 rounded-[2rem] border-2 border-slate-200 flex justify-between items-center shadow-lg group hover:border-blue-200 transition-all leading-none font-serif">
                     <div className="flex items-center gap-8 leading-none font-serif"><div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 shadow-inner shrink-0 leading-none"><Lock size={32}/></div>
                       <div className="leading-none"><div className="font-black text-2xl text-slate-800 leading-tight mb-2 font-serif">{c.desc}</div><div className="flex items-center gap-3 text-base font-bold text-[#1e40af] mt-2 bg-blue-50 px-4 py-1.5 rounded-full w-fit leading-none font-sans"><Globe size={18}/> 適用：{c.type === 'all' ? '全校' : (c.type === 'grade' ? `高 ${c.target} 全學年` : `班級(${c.target})`)} | {c.days.map(d=>DAYS[d]).join(', ')} / {c.periods.map(pId => PERIODS.find(p => p.id === pId)?.label).join(', ')}</div></div>
                     </div>
@@ -480,7 +465,7 @@ export default function App() {
                         return (
                           <div key={dIdx} onDragOver={e => e.preventDefault()} onDrop={() => isEditMode && handleDrop(dIdx, period.id)} className={`border-r-2 border-slate-300 last:border-r-0 flex flex-col items-center justify-center text-center transition-all relative overflow-hidden ${lockRule ? 'bg-slate-50 cursor-not-allowed' : 'bg-white'} ${isEditMode && !lockRule ? 'hover:bg-blue-50/30' : ''}`}>
                             {lockRule && <div className="absolute inset-0 opacity-5 pointer-events-none" style={{backgroundImage: 'repeating-linear-gradient(45deg, #000 0, #000 1px, transparent 0, transparent 50%)', backgroundSize: '10px 10px'}}></div>}
-                            {lockRule ? <div className="flex flex-col items-center gap-1 opacity-70 px-1 leading-tight shrink-0 font-serif"><Lock size={22} className="text-slate-500" /><span className="text-[12px] font-black text-slate-600 uppercase tracking-tighter truncate max-w-full leading-tight font-serif">{lockRule.desc}</span></div> : 
+                            {lockRule ? <div className="flex flex-col items-center gap-1 opacity-70 px-1 leading-tight shrink-0 font-serif"><Lock size={22} className="text-slate-500" /><span className="text-[12px] font-black text-slate-600 uppercase tracking-tighter truncate max-w-full leading-tight font-serif font-black">{lockRule.desc}</span></div> : 
                               items.map((item, idx) => (
                                 <div key={idx} draggable={isEditMode} onDragStart={() => setDraggedItem(item)} className={`w-full px-1 ${isEditMode ? 'cursor-grab active:cursor-grabbing hover:scale-105 transition-transform' : ''}`}>
                                   {sidebarMode === 'teacher' ? (
@@ -507,16 +492,16 @@ export default function App() {
       {/* 調課分析報告 */}
       {proposals.length > 0 && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-50 p-4 font-sans">
-          <div className="bg-white rounded-[3.5rem] p-12 max-w-xl w-full shadow-2xl border-4 border-[#1e40af] animate-in zoom-in duration-200 text-center">
+          <div className="bg-white rounded-[3.5rem] p-12 max-w-xl w-full shadow-2xl border-4 border-[#1e40af] animate-in zoom-in duration-200 text-center font-sans">
             <div className="flex items-center gap-6 mb-10 leading-none">
               <div className="w-20 h-20 bg-blue-50 text-[#1e40af] rounded-3xl flex items-center justify-center shadow-inner leading-none shrink-0"><RefreshCw size={40} /></div>
-              <div className="leading-none text-left"><h3 className="text-4xl font-black text-slate-800 tracking-tighter leading-tight mb-2 font-sans">智慧調課報告</h3><p className="text-slate-500 font-bold leading-tight text-lg font-sans">系統已完成衝突檢索</p></div>
+              <div className="leading-none text-left font-sans"><h3 className="text-4xl font-black text-slate-800 tracking-tighter leading-tight mb-2 font-sans">智慧調課報告</h3><p className="text-slate-500 font-bold leading-tight text-lg font-sans">系統已完成衝突檢索</p></div>
             </div>
             <div className="space-y-6 mb-12 leading-none text-left font-serif">{proposals.map((p, i) => (
               <div key={i} className={`p-8 rounded-[2.5rem] border-2 flex items-start gap-6 transition-all ${p.disabled ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-blue-50/50 border-blue-200 shadow-sm hover:border-[#1e40af] hover:bg-blue-50 cursor-pointer group'}`}>
                 {p.type === 'MOVE' ? <CheckCircle2 className="text-green-600 mt-1 shrink-0" size={32} /> : p.type === 'SWAP' ? <ArrowRightLeft className="text-[#1e40af] mt-1 shrink-0" size={32} /> : <XCircle className="text-red-600 mt-1 shrink-0" size={32} />}
                 <div className="flex-1 leading-none font-serif">
-                  <div className="flex justify-between items-center mb-3 leading-none font-serif"><span className="font-black text-2xl text-slate-800 leading-none font-sans">{p.title}</span><span className={`text-xs font-black px-3 py-1 rounded-full leading-none font-sans ${p.type==='MOVE'?'bg-green-100 text-green-700':'bg-blue-100 text-[#1e40af]'}`}>{p.impact}</span></div>
+                  <div className="flex justify-between items-center mb-3 leading-none font-serif font-sans"><span className="font-black text-2xl text-slate-800 leading-none font-sans">{p.title}</span><span className={`text-xs font-black px-3 py-1 rounded-full leading-none font-sans ${p.type==='MOVE'?'bg-green-100 text-green-700':'bg-blue-100 text-[#1e40af]'}`}>{p.impact}</span></div>
                   <p className="text-slate-600 font-bold text-lg leading-relaxed font-serif">{p.desc}</p>
                   {!p.disabled && <button onClick={p.action} className="mt-6 w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl shadow-xl hover:bg-blue-900 flex items-center justify-center gap-3 leading-none font-sans">執行此方案 <ArrowRight size={24}/></button>}
                 </div>
