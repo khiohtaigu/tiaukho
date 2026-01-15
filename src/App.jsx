@@ -27,9 +27,10 @@ const PERIODS = [
 
 const SIDEBAR_ORDER = ['國文', '英文', '數學', '自然科', '社會科', '藝能科', '本土語'];
 
+// --- 調整 1：藝能科精確排序 ---
 const DOMAIN_SUB_ORDER = {
   '自然科': ['物理', '化學', '生物', '地球科學', '半導體'],
-  '藝能科': ['體育', '美術', '藝術與生活', '音樂', '輔導', '生命教育', '生活科技', '資訊科技', '健康與護理', '全民國防'],
+  '藝能科': ['音樂', '美術', '家政', '生活科技', '資訊科技', '健護', '體育', '全民國防', '輔導', '生命教育', '藝術生活'],
   '社會科': ['歷史', '地理', '公民']
 };
 
@@ -38,9 +39,6 @@ const SCHOOL_LIST = [
 ];
 
 export default function App() {
-  // ----------------------------------------------------------------
-  // 1. Hooks (狀態定義) - 必須放在組件最頂端
-  // ----------------------------------------------------------------
   const currentYear = new Date().getFullYear();
   const [landingStage, setLandingStage] = useState(0); 
   const [currentSchool, setCurrentSchool] = useState(null);
@@ -66,30 +64,52 @@ export default function App() {
   const [proposals, setProposals] = useState([]);
   const [draggedItem, setDraggedItem] = useState(null);
 
-  // ----------------------------------------------------------------
-  // 2. 資料運算
-  // ----------------------------------------------------------------
   const schedules = useMemo(() => dbData.schedules || [], [dbData.schedules]);
   const teachers = useMemo(() => [...(dbData.teachers || [])].sort((a, b) => (a.order || 999) - (b.order || 999)), [dbData.teachers]);
   const classes = useMemo(() => dbData.classes || [], [dbData.classes]);
 
+  // --- 調整 3 & 4：智慧歸類邏輯 (支援跨學科老師在多處出現) ---
   const sidebarData = useMemo(() => {
     const data = { core: {}, domains: {} };
-    teachers.forEach(t => {
-      if (t.teachesNative) {
-        if (!data.core['本土語']) data.core['本土語'] = [];
-        data.core['本土語'].push(t);
-      }
-      if (['自然科', '社會科', '藝能科'].includes(t.domain)) {
-        if (!data.domains[t.domain]) data.domains[t.domain] = {};
-        if (!data.domains[t.domain][t.subject]) data.domains[t.domain][t.subject] = [];
-        data.domains[t.domain][t.subject].push(t);
-      } else {
-        if (!data.core[t.subject]) data.core[t.subject] = [];
-        if (t.subject !== '本土語') data.core[t.subject].push(t);
-      }
+    
+    // 初始化
+    SIDEBAR_ORDER.forEach(key => {
+        if (key.includes('科')) data.domains[key] = {};
+        else data.core[key] = [];
     });
 
+    teachers.forEach(t => {
+      const targetBuckets = [];
+
+      // 判斷該老師該出現在哪些分類裡
+      if (t.teachesNative || t.subject === '本土語') targetBuckets.push({ type: 'core', key: '本土語' });
+      
+      // 音樂與藝術生活老師應多處出現
+      if (t.subject === '音樂') targetBuckets.push({ type: 'domain', domain: '藝能科', sub: '音樂' });
+      if (t.subject === '藝術生活') targetBuckets.push({ type: 'domain', domain: '藝能科', sub: '藝術生活' });
+
+      // 原始主學科歸類
+      if (['自然科', '社會科', '藝能科'].includes(t.domain)) {
+        targetBuckets.push({ type: 'domain', domain: t.domain, sub: t.subject });
+      } else {
+        if (t.subject !== '本土語') targetBuckets.push({ type: 'core', key: t.subject });
+      }
+
+      // 執行歸類 (去重)
+      const uniqueBuckets = Array.from(new Set(targetBuckets.map(JSON.stringify))).map(JSON.parse);
+      uniqueBuckets.forEach(b => {
+        if (b.type === 'core') {
+            if (!data.core[b.key]) data.core[b.key] = [];
+            if (!data.core[b.key].find(x => x.id === t.id)) data.core[b.key].push(t);
+        } else {
+            if (!data.domains[b.domain]) data.domains[b.domain] = {};
+            if (!data.domains[b.domain][b.sub]) data.domains[b.domain][b.sub] = [];
+            if (!data.domains[b.domain][b.sub].find(x => x.id === t.id)) data.domains[b.domain][b.sub].push(t);
+        }
+      });
+    });
+
+    // 依照指定的 DOMAIN_SUB_ORDER 進行最終排序
     Object.keys(data.domains).forEach(domainKey => {
       const subOrder = DOMAIN_SUB_ORDER[domainKey] || [];
       const sortedSubs = {};
@@ -97,6 +117,7 @@ export default function App() {
       Object.keys(data.domains[domainKey]).forEach(sub => { if (!subOrder.includes(sub)) sortedSubs[sub] = data.domains[domainKey][sub]; });
       data.domains[domainKey] = sortedSubs;
     });
+
     return data;
   }, [teachers]);
 
@@ -110,9 +131,6 @@ export default function App() {
     return groups;
   }, [classes]);
 
-  // ----------------------------------------------------------------
-  // 3. Effect (Firebase 同步)
-  // ----------------------------------------------------------------
   useEffect(() => {
     if (!currentSchool) return;
     setIsLoading(true);
@@ -130,12 +148,31 @@ export default function App() {
     return () => unsub();
   }, [currentSchool]);
 
-  // ----------------------------------------------------------------
-  // 4. 功能函數
-  // ----------------------------------------------------------------
+  // --- 調整 2：禁區邏輯 (支援 101-105 連字號語法) ---
+  const checkIsLocked = (classId, dayIdx, periodId) => {
+    if (!classId || classId === "未知") return null;
+    const gradeLetter = classId.charAt(0);
+    return constraints.find(rule => {
+      if (!rule.days?.includes(dayIdx) || !rule.periods?.includes(periodId)) return false;
+      if (rule.type === 'all') return true;
+      if (rule.type === 'grade') return String(rule.target) === String(gradeLetter);
+      
+      // 解析班級，加入範圍解析 (e.g., 101-105)
+      const targetList = String(rule.target).split(/[,，、\s]+/).flatMap(part => {
+          if (part.includes('-')) {
+              const [start, end] = part.split('-').map(n => parseInt(n.trim()));
+              if (!isNaN(start) && !isNaN(end)) {
+                  return Array.from({ length: end - start + 1 }, (_, i) => String(start + i));
+              }
+          }
+          return part.trim();
+      });
+      return targetList.includes(classId);
+    });
+  };
+
   const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
@@ -193,26 +230,8 @@ export default function App() {
   };
 
   const handleAdminLogin = () => {
-    if (loginPassword === SCHOOL_LIST[0].password) {
-      setIsAdmin(true);
-      setCurrentSchool(SCHOOL_LIST[0]);
-      setShowLoginModal(false);
-      setLandingStage(2);
-    } else {
-      alert("密碼錯誤");
-    }
-  };
-
-  const checkIsLocked = (classId, dayIdx, periodId) => {
-    if (!classId || classId === "未知") return null;
-    const gradeLetter = classId.charAt(0);
-    return constraints.find(rule => {
-      if (!rule.days?.includes(dayIdx) || !rule.periods?.includes(periodId)) return false;
-      if (rule.type === 'all') return true;
-      if (rule.type === 'grade') return String(rule.target) === String(gradeLetter);
-      const targetList = String(rule.target).split(/[,，、\s]+/).map(s => s.trim());
-      return targetList.includes(classId);
-    });
+    if (loginPassword === SCHOOL_LIST[0].password) { setIsAdmin(true); setCurrentSchool(SCHOOL_LIST[0]); setShowLoginModal(false); setLandingStage(2); }
+    else alert("密碼錯誤");
   };
 
   const getCellData = (dayIdx, periodId) => {
@@ -229,7 +248,6 @@ export default function App() {
     const occupantInTarget = schedules.find(s => s.classId === source.classId && s.day === targetDay && s.period === targetPeriod);
     const isT1BusyAtDest = schedules.some(s => s.teacherName === source.teacherName && s.day === targetDay && s.period === targetPeriod && s.id !== source.id);
     const options = [];
-
     if (!occupantInTarget && !isT1BusyAtDest) {
       options.push({ type: 'MOVE', title: '直接移動', desc: `移至 ${DAYS[targetDay]} ${PERIODS.find(p=>p.id===targetPeriod)?.label}`, impact: '雙方皆空堂，無衝突', color: 'blue', action: () => executeMove([{ id: source.id, d: targetDay, p: targetPeriod }]) });
     } else if (occupantInTarget) {
@@ -264,35 +282,31 @@ export default function App() {
 
   const TeacherItem = ({ t }) => (
     <button onClick={() => { setSelectedTeacher(t); setSelectedClass(null); setActiveView('schedule'); }} className={`w-full text-left px-4 py-3 text-lg flex items-center justify-between transition-all rounded-md mb-1 ${selectedTeacher?.id === t.id ? 'bg-[#1e40af] text-white font-black shadow-lg scale-[1.02]' : 'text-slate-600 hover:bg-slate-200 font-bold'}`}>
-      <div className="flex items-center gap-2 truncate">
+      <div className="flex items-center gap-2 truncate font-serif">
         <span className="truncate">{t.name}</span>
-        {t.adminRole && t.adminRole !== "兼課" && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-blue-700' : 'bg-blue-100 text-blue-600'}`}>{t.adminRole}</span>}
+        {t.adminRole && t.adminRole !== "兼課" && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-blue-700' : 'bg-blue-600 text-white'}`}>{t.adminRole}</span>}
         {t.isAdjunct && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-slate-700' : 'bg-slate-500 text-white'}`}>兼</span>}
         {t.isHomeroom && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-orange-600' : 'bg-orange-500 text-white'}`}>導</span>}
       </div>
     </button>
   );
 
-  // ----------------------------------------------------------------
-  // 渲染邏輯
-  // ----------------------------------------------------------------
-
   if (landingStage === 0) {
     return (
       <div className="flex flex-col h-screen w-full bg-[#fdfaf1] items-center justify-center overflow-hidden">
         <div className="bg-white rounded-[4rem] shadow-2xl border-[6px] border-[#fbda8b] p-20 text-center animate-in zoom-in duration-700 max-w-4xl w-[90%]">
-          <h1 className="text-9xl font-black text-[#1e3a8a] mb-10 tracking-tighter leading-none">天才小調手</h1>
-          <p className="text-4xl font-bold text-[#3b82f6] tracking-[0.25em] mb-16 uppercase leading-none">智慧調課系統</p>
-          <button onClick={() => setLandingStage(1)} className="bg-[#fbda8b] hover:bg-[#f9cf6a] text-[#1e3a8a] px-14 py-7 rounded-[2.5rem] text-4xl font-black shadow-xl transition-all flex items-center gap-5 mx-auto active:scale-95">點擊進入 <ArrowRight size={40} /></button>
+          <h1 className="text-9xl font-black text-[#1e3a8a] mb-10 tracking-tighter leading-none font-sans">天才小調手</h1>
+          <p className="text-4xl font-bold text-[#3b82f6] tracking-[0.25em] mb-16 uppercase leading-none font-sans">智慧調課系統</p>
+          <button onClick={() => setLandingStage(1)} className="bg-[#fbda8b] hover:bg-[#f9cf6a] text-[#1e3a8a] px-14 py-7 rounded-[2.5rem] text-4xl font-black shadow-xl transition-all flex items-center gap-5 mx-auto active:scale-95 font-sans">點擊進入 <ArrowRight size={40} /></button>
         </div>
-        <div className="mt-12 text-slate-400 font-bold text-base tracking-widest uppercase">© {currentYear} 天才小調手 X 耀毅. All Rights Reserved.</div>
+        <div className="mt-12 text-slate-400 font-bold text-base tracking-widest uppercase font-sans">© {currentYear} 天才小調手 X 耀毅. All Rights Reserved.</div>
       </div>
     );
   }
 
   if (landingStage === 1) {
     return (
-      <div className="flex flex-col h-screen w-full bg-[#f1f5f9] items-center justify-center overflow-hidden">
+      <div className="flex flex-col h-screen w-full bg-[#f1f5f9] items-center justify-center overflow-hidden font-sans">
         <div className="bg-white rounded-[3.5rem] shadow-2xl border-2 border-slate-200 p-16 text-center animate-in slide-in-from-bottom-8 duration-700 max-w-lg w-full mx-4 relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-3 bg-[#1e40af]"></div>
           <School size={80} className="mx-auto text-[#1e3a8a] mb-8 mt-4" />
@@ -309,9 +323,8 @@ export default function App() {
                     <button onClick={() => setShowLoginModal(false)} className="absolute top-8 right-8 text-slate-300 hover:text-slate-600"><X size={32}/></button>
                     <div className="w-20 h-20 bg-blue-100 text-[#1e40af] rounded-3xl flex items-center justify-center mb-8 mx-auto"><Lock size={40}/></div>
                     <h3 className="text-3xl font-black text-center text-slate-800 mb-4">管理員驗證</h3>
-                    <p className="text-slate-500 text-center font-bold mb-8 text-lg">請輸入鳳山高中系統管理密碼</p>
-                    <input type="password" autoFocus className="w-full p-5 bg-slate-100 rounded-2xl border-none text-center text-2xl font-black tracking-widest focus:ring-4 focus:ring-blue-200 outline-none mb-8" placeholder="••••" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()} />
-                    <button onClick={handleAdminLogin} className="w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl shadow-xl hover:bg-blue-900 transition-all">確認登入</button>
+                    <input type="password" autoFocus className="w-full p-5 bg-slate-100 rounded-2xl border-none text-center text-2xl font-black focus:ring-4 mb-8" placeholder="••••" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()} />
+                    <button onClick={handleAdminLogin} className="w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl hover:bg-blue-900">確認登入</button>
                 </div>
             </div>
         )}
@@ -324,7 +337,7 @@ export default function App() {
       <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20 shrink-0 font-sans">
         <div className="p-6 bg-[#1e3a8a] text-white shrink-0">
           <button onClick={() => { setLandingStage(1); setSelectedTeacher(null); setSelectedClass(null); }} className="text-xs font-black uppercase tracking-widest text-slate-300 hover:text-white flex items-center gap-1 mb-2 transition-colors underline underline-offset-4 leading-none">← 切換學校</button>
-          <h1 className="text-2xl font-black flex items-center gap-2 tracking-tight leading-tight"><Calendar size={28} /> {currentSchool?.name}</h1>
+          <h1 className="text-2xl font-black flex items-center gap-2 tracking-tight leading-tight font-serif"><Calendar size={28} /> {currentSchool?.name}</h1>
         </div>
         <div className="flex p-2 bg-slate-100 border-b border-slate-300 shrink-0">
           <button onClick={() => setSidebarMode('teacher')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'teacher' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500 hover:bg-slate-200'}`}>教師列表</button>
@@ -389,7 +402,7 @@ export default function App() {
             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-white shadow-xl ${sidebarMode === 'teacher' ? (selectedTeacher?.isAdjunct ? 'bg-slate-700' : 'bg-[#1e40af]') : 'bg-blue-800'}`}><User size={32}/></div>
             <div className="leading-tight"><h2 className="text-3xl font-black text-slate-900 tracking-tight mb-1 leading-none">{sidebarMode === 'teacher' ? (selectedTeacher?.name || '請由左側選擇') : (selectedClass?.name || '請由左側選擇')} 的週課表</h2><span className="text-blue-600 font-bold text-base">{sidebarMode === 'teacher' ? (selectedTeacher?.subject ? `${selectedTeacher.subject}科` : '') : (selectedClass?.grade || '')}</span></div>
           </div>
-          <div className="flex gap-3 leading-none">
+          <div className="flex gap-3 leading-none font-sans">
             {isAdmin && <button onClick={() => setIsEditMode(!isEditMode)} className={`px-6 py-2.5 rounded-xl font-black text-sm border-2 leading-none ${isEditMode ? 'bg-orange-500 text-white border-orange-600 shadow-lg animate-pulse' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{isEditMode ? '停止調課' : '進行調課'}</button>}
             <button onClick={() => setActiveView('schedule')} className={`px-6 py-2.5 rounded-xl font-black text-sm flex items-center gap-2 leading-none ${activeView === 'schedule' ? 'bg-[#1e40af] text-white shadow-lg' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><BookOpen size={18}/> 檢視課表</button>
             {isAdmin && <button onClick={() => setActiveView(activeView === 'settings' ? 'schedule' : 'settings')} className={`px-6 py-2.5 rounded-xl font-black text-sm flex items-center gap-2 leading-none ${activeView === 'settings' ? 'bg-[#1e40af] text-white shadow-lg' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><Settings size={18}/>排課設定</button>}
@@ -404,14 +417,14 @@ export default function App() {
                 <div className="space-y-8">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
                     <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase">適用範圍</label>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 font-sans">
                         <button onClick={() => setNewRule({...newRule, type:'all'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='all'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>全校</button>
                         <button onClick={() => setNewRule({...newRule, type:'grade'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='grade'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>特定年級</button>
                         <button onClick={() => setNewRule({...newRule, type:'classes'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='classes'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>特定班級</button>
                       </div>
                       <div className="mt-4">
-                        {newRule.type === 'grade' && <select className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg" value={newRule.target} onChange={e=>setNewRule({...newRule, target:e.target.value})}><option value="1">高一年級</option><option value="2">高二年級</option><option value="3">高三年級</option></select>}
-                        {newRule.type === 'classes' && <input type="text" placeholder="例如: 201、202" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg font-serif" value={newRule.classList} onChange={e=>setNewRule({...newRule, classList:e.target.value})} />}
+                        {newRule.type === 'grade' && <select className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg font-sans" value={newRule.target} onChange={e=>setNewRule({...newRule, target:e.target.value})}><option value="1">高一年級</option><option value="2">高二年級</option><option value="3">高三年級</option></select>}
+                        {newRule.type === 'classes' && <input type="text" placeholder="例如: 201、202-205" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg font-serif" value={newRule.classList} onChange={e=>setNewRule({...newRule, classList:e.target.value})} />}
                       </div>
                     </div>
                     <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase leading-none">規則說明</label><input type="text" placeholder="說明" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg h-16 font-serif" value={newRule.desc} onChange={e=>setNewRule({...newRule, desc:e.target.value})} /></div>
@@ -467,13 +480,13 @@ export default function App() {
                         return (
                           <div key={dIdx} onDragOver={e => e.preventDefault()} onDrop={() => isEditMode && handleDrop(dIdx, period.id)} className={`border-r-2 border-slate-300 last:border-r-0 flex flex-col items-center justify-center text-center transition-all relative overflow-hidden ${lockRule ? 'bg-slate-50 cursor-not-allowed' : 'bg-white'} ${isEditMode && !lockRule ? 'hover:bg-blue-50/30' : ''}`}>
                             {lockRule && <div className="absolute inset-0 opacity-5 pointer-events-none" style={{backgroundImage: 'repeating-linear-gradient(45deg, #000 0, #000 1px, transparent 0, transparent 50%)', backgroundSize: '10px 10px'}}></div>}
-                            {lockRule ? <div className="flex flex-col items-center gap-1 opacity-70 px-1 leading-tight shrink-0 font-serif"><Lock size={22} className="text-slate-500" /><span className="text-[12px] font-black text-slate-600 uppercase tracking-tighter truncate max-w-full leading-tight">{lockRule.desc}</span></div> : 
+                            {lockRule ? <div className="flex flex-col items-center gap-1 opacity-70 px-1 leading-tight shrink-0 font-serif"><Lock size={22} className="text-slate-500" /><span className="text-[12px] font-black text-slate-600 uppercase tracking-tighter truncate max-w-full leading-tight font-serif">{lockRule.desc}</span></div> : 
                               items.map((item, idx) => (
                                 <div key={idx} draggable={isEditMode} onDragStart={() => setDraggedItem(item)} className={`w-full px-1 ${isEditMode ? 'cursor-grab active:cursor-grabbing hover:scale-105 transition-transform' : ''}`}>
                                   {sidebarMode === 'teacher' ? (
                                     <><div className="font-black text-blue-900 text-3xl tracking-tighter leading-none mb-1 font-sans">{item.classId!=="未知"?item.classId:""}</div><div className="px-3 py-1 bg-[#1e40af] text-white text-[11px] font-black rounded-lg shadow-sm inline-block uppercase truncate max-w-full leading-none font-serif">{item.subject}</div></>
                                   ) : (
-                                    <><div className="font-black text-slate-800 text-3xl tracking-tight leading-none mb-1 truncate max-w-full font-serif">{item.subject}</div><div className="px-3 py-1 bg-slate-800 text-white text-[11px] font-black rounded-lg shadow-sm inline-block truncate max-w-full leading-none font-serif">{item.teacherName}</div></>
+                                    <><div className="font-black text-slate-800 text-3xl tracking-tight leading-none mb-1 truncate max-w-full font-serif leading-tight">{item.subject}</div><div className="px-3 py-1 bg-slate-800 text-white text-[11px] font-black rounded-lg shadow-sm inline-block truncate max-w-full leading-none font-sans mt-1">{item.teacherName}</div></>
                                   )}
                                 </div>
                               ))
@@ -504,7 +517,7 @@ export default function App() {
                 {p.type === 'MOVE' ? <CheckCircle2 className="text-green-600 mt-1 shrink-0" size={32} /> : p.type === 'SWAP' ? <ArrowRightLeft className="text-[#1e40af] mt-1 shrink-0" size={32} /> : <XCircle className="text-red-600 mt-1 shrink-0" size={32} />}
                 <div className="flex-1 leading-none font-serif">
                   <div className="flex justify-between items-center mb-3 leading-none font-serif"><span className="font-black text-2xl text-slate-800 leading-none font-sans">{p.title}</span><span className={`text-xs font-black px-3 py-1 rounded-full leading-none font-sans ${p.type==='MOVE'?'bg-green-100 text-green-700':'bg-blue-100 text-[#1e40af]'}`}>{p.impact}</span></div>
-                  <p className="text-slate-600 font-bold text-lg leading-relaxed">{p.desc}</p>
+                  <p className="text-slate-600 font-bold text-lg leading-relaxed font-serif">{p.desc}</p>
                   {!p.disabled && <button onClick={p.action} className="mt-6 w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl shadow-xl hover:bg-blue-900 flex items-center justify-center gap-3 leading-none font-sans">執行此方案 <ArrowRight size={24}/></button>}
                 </div>
               </div>
