@@ -4,14 +4,14 @@ import { Link } from 'react-router-dom';
 import { 
   Calendar, Search, ChevronDown, ChevronRight,
   RefreshCw, User, BookOpen, Layers,
-  Settings, Lock, Plus, Trash2, Globe, CheckCircle2, XCircle, ArrowRightLeft, School, ArrowRight, X, MousePointerClick, Upload, GitBranch, Edit2, AlertCircle, Download, Camera, Monitor
+  Settings, Lock, Plus, Trash2, Globe, CheckCircle2, XCircle, ArrowRightLeft, School, ArrowRight, X, MousePointerClick, Upload, GitBranch, Edit2, AlertCircle, Download, Camera, Monitor, ToggleRight, ToggleLeft
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
 
 // 引入 Firebase
 import { db } from './firebase';
-import { doc, setDoc, onSnapshot } from "firebase/firestore";
+import { doc, setDoc, onSnapshot, updateDoc } from "firebase/firestore";
 
 // --- 常數定義 ---
 const DAYS = ['週一', '週二', '週三', '週四', '週五'];
@@ -49,7 +49,10 @@ export default function MainSystem() {
   const [loginPassword, setLoginPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   
-  const [dbData, setDbData] = useState({ teachers: [], schedules: [], classes: [], constraints: [], domainWarnings: [] });
+  // dbData 新增 isApplyEnabled 預設值
+  const [dbData, setDbData] = useState({ 
+    teachers: [], schedules: [], classes: [], constraints: [], domainWarnings: [], isApplyEnabled: true 
+  });
   const [activeView, setActiveView] = useState('schedule'); 
   const [sidebarMode, setSidebarMode] = useState('teacher');
   const [selectedTeacher, setSelectedTeacher] = useState(null);
@@ -78,7 +81,6 @@ export default function MainSystem() {
   const teachers = useMemo(() => [...(dbData?.teachers || [])].sort((a, b) => (a.order || 999) - (b.order || 999)), [dbData]);
   const classes = useMemo(() => dbData?.classes || [], [dbData]);
 
-  // --- 修正後的 sidebarData：增加對「跨學科」與「本土語」教師的動態偵測 ---
   const sidebarData = useMemo(() => {
     const data = { core: {}, domains: {} };
     SIDEBAR_ORDER.forEach(key => { 
@@ -89,8 +91,6 @@ export default function MainSystem() {
 
     teachers.forEach(t => {
       const targetBuckets = [];
-
-      // 動態檢查：該老師在課表中是否有教「本土語」相關課程
       const teachesNativeInSchedule = schedules.some(s => s.teacherName === t.name && s.subject?.includes('本土語'));
 
       if (t.teachesNative || t.subject === '本土語' || teachesNativeInSchedule) {
@@ -103,11 +103,9 @@ export default function MainSystem() {
       if (['自然科', '社會科', '藝能科'].includes(t.domain)) {
         targetBuckets.push({ type: 'domain', domain: t.domain, sub: t.subject });
       } else {
-        // 如果不是特別標註為本土語，則歸類到原本的學科
         if (t.subject !== '本土語') targetBuckets.push({ type: 'core', key: t.subject });
       }
 
-      // 去重並分配到對應欄位
       Array.from(new Set(targetBuckets.map(JSON.stringify))).map(JSON.parse).forEach(b => {
         if (b.type === 'core') {
             if (!data.core[b.key]) data.core[b.key] = [];
@@ -128,7 +126,7 @@ export default function MainSystem() {
       data.domains[domainKey] = sortedSubs;
     });
     return data;
-  }, [teachers, schedules]); // 關鍵：相依性增加 schedules
+  }, [teachers, schedules]);
 
   const groupedClasses = useMemo(() => {
     const groups = {};
@@ -172,10 +170,13 @@ export default function MainSystem() {
     const unsub = onSnapshot(doc(db, "schools", currentSchool.id), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        setDbData(data);
+        setDbData({
+            ...data,
+            isApplyEnabled: data.isApplyEnabled !== undefined ? data.isApplyEnabled : true
+        });
         setConstraints(data.constraints || []);
       } else {
-        setDbData({ teachers: [], schedules: [], classes: [], constraints: [], domainWarnings: [] });
+        setDbData({ teachers: [], schedules: [], classes: [], constraints: [], domainWarnings: [], isApplyEnabled: true });
       }
       setIsLoading(false);
     });
@@ -186,6 +187,17 @@ export default function MainSystem() {
   // 3. 核心功能
   // ----------------------------------------------------------------
   
+  // 管理員切換自主調課表功能開關
+  const handleToggleApply = async () => {
+    if (!isAdmin) return;
+    const newState = !dbData.isApplyEnabled;
+    try {
+        await updateDoc(doc(db, "schools", currentSchool.id), {
+            isApplyEnabled: newState
+        });
+    } catch (e) { alert("更新開關失敗"); }
+  };
+
   const handleSaveAsImage = async () => {
     if (!exportRef.current) return;
     try {
@@ -346,10 +358,11 @@ export default function MainSystem() {
             schedules: newSchedules, 
             classes: finalClasses, 
             constraints: newConstraints,
-            domainWarnings: newDomainWarnings
+            domainWarnings: newDomainWarnings,
+            isApplyEnabled: true // 匯入後預設開啟
         });
         alert("資料已更新！");
-      } catch (err) { alert("讀取 Excel 失敗，請檢查格式"); }
+      } catch (err) { alert("讀取 Excel 失敗"); }
     };
     reader.readAsArrayBuffer(file);
   };
@@ -479,7 +492,7 @@ export default function MainSystem() {
 
   if (landingStage === 0) {
     return (
-      <div className="flex flex-col h-screen w-full bg-[#fdfaf1] items-center justify-center overflow-hidden font-serif">
+      <div className="flex flex-col h-screen w-full bg-[#fdfaf1] items-center justify-center overflow-hidden font-serif text-slate-900">
         <div className="bg-white rounded-[4rem] shadow-2xl border-[6px] border-[#fbda8b] p-20 text-center animate-in zoom-in duration-700 max-w-4xl w-[90%]">
           <h1 className="text-9xl font-black text-[#1e3a8a] mb-10 tracking-tighter leading-none font-sans">天才小調手</h1>
           <p className="text-4xl font-bold text-[#3b82f6] tracking-[0.25em] mb-16 uppercase leading-none font-sans">智慧調課系統</p>
@@ -620,6 +633,32 @@ export default function MainSystem() {
         {activeView === 'settings' ? (
           <div className="flex-1 p-10 overflow-y-auto bg-slate-50 custom-scrollbar pb-32 font-sans">
             <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-4 duration-500">
+              
+              {/* 新增：自主調課開關區域 */}
+              <div className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-10 relative flex items-center justify-between overflow-hidden">
+                <div className="absolute left-0 top-0 bottom-0 w-3 bg-purple-600"></div>
+                <div className="flex items-center gap-6">
+                    <div className={`w-20 h-20 rounded-3xl flex items-center justify-center transition-all ${dbData.isApplyEnabled ? 'bg-purple-100 text-purple-600' : 'bg-slate-100 text-slate-400'}`}>
+                        <Edit2 size={40} />
+                    </div>
+                    <div>
+                        <h3 className="text-3xl font-black text-slate-800 leading-none mb-3 font-serif flex items-center gap-3">
+                            填寫權限管理 
+                            {dbData.isApplyEnabled ? <span className="text-sm bg-green-500 text-white px-3 py-1 rounded-full">開放中</span> : <span className="text-sm bg-red-500 text-white px-3 py-1 rounded-full">已關閉</span>}
+                        </h3>
+                        <p className="text-slate-400 font-bold text-lg">控制是否允許老師點擊「前往填寫自主調課表」按鈕</p>
+                    </div>
+                </div>
+                <button 
+                    onClick={handleToggleApply}
+                    className={`flex items-center gap-2 p-1 rounded-full transition-all duration-300 w-32 relative ${dbData.isApplyEnabled ? 'bg-purple-600' : 'bg-slate-300'}`}
+                >
+                    <div className={`w-14 h-14 bg-white rounded-full shadow-lg flex items-center justify-center transform transition-transform duration-300 ${dbData.isApplyEnabled ? 'translate-x-[68px]' : 'translate-x-0'}`}>
+                        {dbData.isApplyEnabled ? <ToggleRight size={32} className="text-purple-600" /> : <ToggleLeft size={32} className="text-slate-400" />}
+                    </div>
+                </button>
+              </div>
+
               <div id="rule-form" className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-10 relative">
                 <h3 className="text-3xl font-black text-slate-800 flex items-center gap-3 mb-10 leading-none font-serif">{editingRuleId ? <Edit2 size={32} className="text-orange-600"/> : <Plus size={32} className="text-blue-600"/>} {editingRuleId ? '修改排課禁區規則' : '新增排課禁區規則'}</h3>
                 <div className="space-y-8">
@@ -674,7 +713,7 @@ export default function MainSystem() {
           </div>
         ) : (
           <div className="flex-1 p-4 lg:p-8 flex flex-col min-h-0 overflow-hidden bg-slate-50">
-            {isLoading ? <div className="flex-1 flex items-center justify-center text-2xl font-black text-slate-300 animate-pulse font-sans">連線中...</div> : 
+            {isLoading ? <div className="flex-1 flex items-center justify-center text-2xl font-black text-slate-300 animate-pulse font-sans text-slate-900">連線中...</div> : 
             <div className="flex-1 bg-white rounded-[2.5rem] shadow-2xl border-2 border-slate-300 overflow-hidden flex flex-col font-serif">
               <div className="grid grid-cols-6 bg-[#1e293b] text-white shrink-0 border-b-2 border-slate-600 leading-none font-sans">
                 <div className="p-4 text-center text-[11px] font-black border-r border-slate-600 uppercase tracking-widest leading-relaxed">節次</div>
@@ -785,10 +824,18 @@ export default function MainSystem() {
                             </button>
                         ) : (
                             <div className="flex flex-col items-center px-6">
-                                <span className="text-purple-700 font-black text-sm mb-1 uppercase tracking-widest animate-pulse">模擬完成！如需正式調動：</span>
-                                <Link to="/apply" className="bg-purple-600 text-white px-8 py-3 rounded-xl font-black hover:bg-purple-700 shadow-lg transition-all flex items-center gap-2">
-                                    前往填寫「自主調課表」 <ArrowRight size={20}/>
-                                </Link>
+                                {dbData.isApplyEnabled ? (
+                                    <>
+                                        <span className="text-purple-700 font-black text-sm mb-1 uppercase tracking-widest animate-pulse">模擬完成！如需正式調動：</span>
+                                        <Link to="/apply" className="bg-purple-600 text-white px-8 py-3 rounded-xl font-black hover:bg-purple-700 shadow-lg transition-all flex items-center gap-2">
+                                            前往填寫「自主調課表」 <ArrowRight size={20}/>
+                                        </Link>
+                                    </>
+                                ) : (
+                                    <div className="flex items-center gap-2 px-8 py-3 bg-slate-100 text-slate-400 rounded-xl font-black border-2 border-slate-200">
+                                        <Lock size={18} /> 目前非自主調課時段
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -811,7 +858,7 @@ export default function MainSystem() {
                               return (
                                 <div key={idx} className="flex items-center gap-2 flex-wrap text-slate-600 font-bold text-lg font-serif">
                                   <span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(per => per.id === act.p)?.label}</span>
-                                  {warning && <span className="px-1.5 py-0.5 border border-orange-500 text-orange-600 text-[10px] font-black rounded bg-orange-50/50 whitespace-nowrap">{warning}</span>}
+                                  {warning && <span className="px-1.5 py-0.5 border border-orange-500 text-orange-600 text-[10px] font-black rounded bg-orange-50/30 whitespace-nowrap">{warning}</span>}
                                 </div>
                               );
                             })}
