@@ -60,9 +60,9 @@ export default function MainSystem() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isEditMode, setIsEditMode] = useState(false); 
 
-  // --- 新增：手動換課模式狀態 ---
+  // 手動換課模式狀態
   const [isManualSwapMode, setIsManualSwapMode] = useState(false);
-  const [swapQueue, setSwapQueue] = useState([]); // 存儲點擊的時段序列 [{day, period, item}]
+  const [swapQueue, setSwapQueue] = useState([]); 
   
   const [activeMainKey, setActiveMainKey] = useState(null); 
   const [activeSubKey, setActiveSubKey] = useState(null);
@@ -142,29 +142,56 @@ export default function MainSystem() {
     return groups;
   }, [classes]);
 
+  /**
+   * 修正後的警示判斷邏輯
+   * 確保「輔導課」、「領域時間」、「團體活動」等能被正確辨識
+   */
   const getSlotWarning = (teacherName, dayIdx, periodId) => {
     if (!dbData || !dbData.domainWarnings) return null;
     const teacher = teachers.find(t => t.name === teacherName);
     if (!teacher) return null;
+    
     const teacherDomain = (teacher.domain || "").trim();
     const teacherSubject = (teacher.subject || "").trim();
 
     const warning = dbData.domainWarnings.find(w => {
       if (w.day !== dayIdx || w.period !== periodId) return false;
-      const ruleDomain = w.domain.trim();
-      if (ruleDomain === "導師") return teacher.isHomeroom;
-      if (ruleDomain === "團體活動" || ruleDomain === "輔導課") return true;
+      
+      const ruleDomain = (w.domain || "").trim();
+      const ruleDesc = (w.desc || "").trim();
+
+      // 1. 全域性警示：團體活動、輔導課 (該時段任何老師進入都要警示)
+      if (
+        ruleDomain.includes("團體活動") || ruleDomain.includes("輔導課") ||
+        ruleDesc.includes("團體活動") || ruleDesc.includes("輔導課")
+      ) {
+        return true;
+      }
+
+      // 2. 導師警示：只有導師進入該時段才警示
+      if (ruleDomain === "導師" || ruleDesc === "導師") {
+        return teacher.isHomeroom;
+      }
+
+      // 3. 領域時間 / 學科相關警示
       const cleanRule = ruleDomain.replace('科', '');
+      if (!cleanRule) return false;
+
+      // 比對老師的領域或學科是否包含規則中的名稱
       const basicMatch = teacherDomain.includes(cleanRule) || 
                          teacherSubject.includes(cleanRule) ||
                          ruleDomain.includes(teacherDomain) ||
                          ruleDomain.includes(teacherSubject);
+      
       if (basicMatch) return true;
+
+      // 檢查子科目比對 (例如規則是「藝能科」，老師是「音樂」)
       const subSubjects = DOMAIN_SUB_ORDER[ruleDomain] || 
                           DOMAIN_SUB_ORDER[ruleDomain + '科'] || 
                           DOMAIN_SUB_ORDER[ruleDomain.replace('科', '') + '科'] || [];
       return subSubjects.includes(teacherSubject) || subSubjects.includes(teacherDomain);
     });
+    
     return warning ? warning.desc : null;
   };
 
@@ -189,9 +216,25 @@ export default function MainSystem() {
   }, [currentSchool]);
 
   // ----------------------------------------------------------------
-  // 3. 核心調動功能
+  // 3. 核心功能
   // ----------------------------------------------------------------
   
+  const handleSaveAsImage = async () => {
+    if (!exportRef.current) return;
+    try {
+      const canvas = await html2canvas(exportRef.current, {
+        scale: 2,
+        backgroundColor: "#f8fafc",
+        useCORS: true,
+      });
+      const image = canvas.toDataURL("image/png");
+      const link = document.createElement("a");
+      link.href = image;
+      link.download = `${currentSchool.name}_${previewProposal ? previewProposal.letter : '模擬'}_調課分析.png`;
+      link.click();
+    } catch (err) { alert("另存圖片失敗，請重試"); }
+  };
+
   const handleToggleState = async (field) => {
     if (!isAdmin) return;
     try {
@@ -229,11 +272,8 @@ export default function MainSystem() {
     return true;
   };
 
-  // --- 手動路徑調課邏輯 ---
   const handleManualSlotClick = (dayIdx, periodId, item) => {
     if (!isManualSwapMode || !isAdmin) return;
-    
-    // 檢查是否重複選取 (點擊已選取的則取消選取)
     const existsIdx = swapQueue.findIndex(q => q.day === dayIdx && q.period === periodId);
     if (existsIdx !== -1) {
         setSwapQueue(swapQueue.filter((_, i) => i !== existsIdx));
@@ -244,26 +284,21 @@ export default function MainSystem() {
 
   const executeManualSwap = async () => {
     if (swapQueue.length < 2) return alert("請至少選擇兩個時段進行調動。");
-    
     const nextSchedules = [...schedules];
     const affectedIds = swapQueue.filter(q => q.item).map(q => q.item.id);
 
-    // 1. 預檢衝突 (模擬移動後檢查)
     for (let i = 0; i < swapQueue.length; i++) {
         const source = swapQueue[i];
-        const target = swapQueue[(i + 1) % swapQueue.length]; // 循環：1->2, 2->3, 3->1
-        
+        const target = swapQueue[(i + 1) % swapQueue.length]; 
         if (source.item) {
             const tName = source.item.teacherName;
             const cId = source.item.classId;
-            // 檢查目標時段 target 是否有該老師或該班級的其它課程 (排除本次受影響的 ID)
             if (!isSlotAvailable(tName, cId, target.day, target.period, affectedIds)) {
                 return alert(`調動失敗：${tName} 老師 或 班級 ${cId} 在 ${DAYS[target.day]} 第${target.period}節 有衝突。`);
             }
         }
     }
 
-    // 2. 正式執行調動
     swapQueue.forEach((source, i) => {
         const target = swapQueue[(i + 1) % swapQueue.length];
         if (source.item) {
@@ -274,7 +309,6 @@ export default function MainSystem() {
         }
     });
 
-    // 3. 更新資料庫
     try {
         setDbData(prev => ({ ...prev, schedules: nextSchedules }));
         await setDoc(doc(db, "schools", currentSchool.id), { ...dbData, schedules: nextSchedules });
@@ -450,7 +484,7 @@ export default function MainSystem() {
   };
 
   const handleCellDoubleClick = (item) => {
-    if (isManualSwapMode) return; // 手動換課模式禁用雙擊
+    if (isManualSwapMode) return; 
     if (sidebarMode === 'teacher') {
       const targetClass = classes.find(c => c.id === item.classId);
       if (targetClass) { setSidebarMode('class'); setSelectedClass(targetClass); setSelectedTeacher(null); setActiveView('schedule'); }
@@ -482,7 +516,7 @@ export default function MainSystem() {
   const TeacherItem = ({ t }) => (
     <button onClick={() => { setSelectedTeacher(t); setSelectedClass(null); setActiveView('schedule'); }} className={`w-full text-left px-4 py-3 text-lg flex items-center justify-between transition-all rounded-md mb-1 ${selectedTeacher?.id === t.id ? 'bg-blue-800 text-white font-black shadow-lg scale-[1.02]' : 'text-slate-600 hover:bg-slate-200 hover:text-slate-800 font-bold'}`}>
       <div className="flex items-center gap-2 truncate font-serif text-lg leading-none">
-        <span className="break-all text-slate-900">{t.name}</span>
+        <span className="break-all text-slate-900 font-black">{t.name}</span>
         {t.adminRole && t.adminRole !== "兼課" && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-blue-700' : 'bg-blue-600 text-white'}`}>{t.adminRole}</span>}
         {t.isAdjunct && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-slate-700' : 'bg-slate-500 text-white'}`}>兼</span>}
         {t.isHomeroom && <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${selectedTeacher?.id === t.id ? 'bg-white text-orange-600' : 'bg-orange-500 text-white'}`}>導</span>}
@@ -515,9 +549,9 @@ export default function MainSystem() {
               else if (moveIn) { 
                 bgColor = "bg-green-100 ring-2 ring-green-500 ring-inset"; 
                 content = (
-                  <div className="flex flex-col items-center justify-center leading-none">
+                  <div className="flex flex-col items-center justify-center leading-none text-slate-900">
                     <span className="font-black text-green-900 text-base">{moveIn.c}</span>
-                    <span className="text-[10px] text-green-700 font-black scale-90 mt-0.5">新入</span>
+                    <span className="text-[10px] text-green-700 font-black scale-90 mt-0.5 font-sans">新入</span>
                     {warning && <span className="text-[9px] text-red-600 font-black scale-90 leading-none mt-0.5">{warning}</span>}
                   </div>
                 ); 
@@ -551,7 +585,7 @@ export default function MainSystem() {
         <div className="bg-white rounded-[3.5rem] shadow-2xl border-2 border-slate-200 p-16 text-center animate-in slide-in-from-bottom-8 duration-700 max-w-lg w-full mx-4 relative overflow-hidden font-black">
           <div className="absolute top-0 left-0 w-full h-3 bg-[#1e40af]"></div>
           <School size={80} className="mx-auto text-[#1e3a8a] mb-8 mt-4" />
-          <h3 className="text-5xl font-black text-slate-800 mb-12 tracking-tight font-serif">鳳山高級中學</h3>
+          <h3 className="text-5xl font-black text-slate-800 mb-12 tracking-tight font-serif text-slate-900">鳳山高級中學</h3>
           <div className="flex flex-col gap-6 font-black">
             <button onClick={() => { setIsAdmin(false); setCurrentSchool(SCHOOL_LIST[0]); setLandingStage(2); }} className="w-full bg-[#1e40af] text-white py-6 rounded-3xl font-black text-2xl hover:bg-blue-900 transition-all shadow-xl active:scale-[0.98]">直接進入 (檢視用)</button>
             <button onClick={() => setShowLoginModal(true)} className="w-full bg-white text-[#1e40af] border-4 border-[#1e40af] py-6 rounded-3xl font-black text-2xl hover:bg-blue-50 transition-all active:scale-[0.98]">管理員登入</button>
@@ -563,7 +597,7 @@ export default function MainSystem() {
                 <div className="bg-white rounded-[3rem] p-12 max-w-md w-full shadow-2xl border-4 border-[#1e40af] relative">
                     <button onClick={() => setShowLoginModal(false)} className="absolute top-8 right-8 text-slate-300 hover:text-slate-600 font-black"><X size={32}/></button>
                     <div className="w-20 h-20 bg-blue-100 text-[#1e40af] rounded-3xl flex items-center justify-center mb-8 mx-auto"><Lock size={40}/></div>
-                    <h3 className="text-3xl font-black text-center text-slate-800 mb-4 font-serif">管理員驗證</h3>
+                    <h3 className="text-3xl font-black text-center text-slate-800 mb-4 font-serif text-slate-900">管理員驗證</h3>
                     <input type="password" autoFocus className="w-full p-5 bg-slate-100 rounded-2xl border-none text-center text-2xl font-black focus:ring-4 mb-8 text-slate-900" placeholder="••••" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()} />
                     <button onClick={handleAdminLogin} className="w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl hover:bg-blue-900 font-serif font-black">確認登入</button>
                 </div>
@@ -576,7 +610,7 @@ export default function MainSystem() {
   return (
     <div className="flex h-screen w-full bg-[#f1f5f9] text-slate-900 overflow-hidden font-serif font-black">
       <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20 shrink-0 font-sans text-slate-900">
-        <div className="p-6 bg-[#1e3a8a] text-white shrink-0 font-black text-white">
+        <div className="p-6 bg-[#1e3a8a] text-white shrink-0 font-black">
           <button onClick={() => { setLandingStage(1); setSelectedTeacher(null); setSelectedClass(null); }} className="text-xs font-black uppercase tracking-widest text-slate-300 hover:text-white flex items-center gap-1 mb-2 transition-colors underline underline-offset-4 leading-none text-slate-300 font-sans">← 切換學校</button>
           <h1 className="text-2xl font-black flex items-center gap-2 tracking-tight leading-tight font-serif text-white"><Calendar size={28} className="text-white"/> {currentSchool?.name}</h1>
         </div>
@@ -584,10 +618,10 @@ export default function MainSystem() {
           <button onClick={() => setSidebarMode('teacher')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'teacher' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500 hover:bg-slate-200'}`}>教師列表</button>
           <button onClick={() => setSidebarMode('class')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'class' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500 hover:bg-slate-200'}`}>班級列表</button>
         </div>
-        <div className="p-4 border-b border-slate-300 bg-white shrink-0 text-slate-900"><div className="relative"><Search className="absolute left-3 top-3 text-slate-400" size={20} /><input type="text" placeholder="搜尋..." className="w-full pl-11 pr-4 py-3 bg-slate-100 border-none rounded-xl text-base font-bold outline-none placeholder-slate-400 text-slate-900" onChange={(e) => setSearchTerm(e.target.value)} /></div></div>
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 bg-white text-slate-900">
+        <div className="p-4 border-b border-slate-300 bg-white shrink-0 text-slate-900 font-sans"><div className="relative"><Search className="absolute left-3 top-3 text-slate-400" size={20} /><input type="text" placeholder="搜尋..." className="w-full pl-11 pr-4 py-3 bg-slate-100 border-none rounded-xl text-base font-bold outline-none placeholder-slate-400 text-slate-900" onChange={(e) => setSearchTerm(e.target.value)} /></div></div>
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 bg-white text-slate-900 font-serif">
           {sidebarMode === 'teacher' ? (
-            <div className="space-y-2 pb-10 text-slate-900 font-serif">
+            <div className="space-y-2 pb-10">
               {SIDEBAR_ORDER.map(key => {
                 const members = sidebarData.core[key]; const domains = sidebarData.domains[key];
                 if (members) {
@@ -597,20 +631,20 @@ export default function MainSystem() {
                   return (
                     <div key={key}>
                       <button onClick={() => toggleMain(key)} className="w-full flex items-center justify-between p-4 hover:bg-slate-100 rounded-xl group font-black text-lg text-slate-800 leading-none text-slate-900"><div className="flex items-center gap-3"><BookOpen size={20} className="text-blue-600"/>{key === '本土語' ? key : key + '科'}</div>{isExpanded ? <ChevronDown size={20}/> : <ChevronRight size={20}/>}</button>
-                      {isExpanded && <div className="ml-7 border-l-2 border-slate-200 pl-3 mt-1 text-slate-900">{filtered.map(t => <TeacherItem key={t.id} t={t}/>)}</div>}
+                      {isExpanded && <div className="ml-7 border-l-2 border-slate-200 pl-3 mt-1">{filtered.map(t => <TeacherItem key={t.id} t={t}/>)}</div>}
                     </div>
                   );
                 }
                 if (domains) {
                   const isExpanded = activeMainKey === key || searchTerm !== '';
                   return (
-                    <div key={key} className="mb-2 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden shadow-sm text-slate-900">
-                      <button onClick={() => toggleMain(key)} className="w-full flex items-center justify-between p-4 bg-slate-100/80 hover:bg-slate-200 transition-colors leading-none font-black text-lg text-indigo-900 text-slate-900"><div className="flex items-center gap-3"><Layers size={20} className="text-indigo-600"/>{key}</div>{isExpanded ? <ChevronDown size={20}/> : <ChevronRight size={20}/>}</button>
-                      {isExpanded && <div className="p-2 space-y-1 text-slate-900">{Object.entries(domains).map(([sub, subMembers]) => {
+                    <div key={key} className="mb-2 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                      <button onClick={() => toggleMain(key)} className="w-full flex items-center justify-between p-4 bg-slate-100/80 hover:bg-slate-200 transition-colors leading-none font-black text-lg text-indigo-900"><div className="flex items-center gap-3"><Layers size={20} className="text-indigo-600"/>{key}</div>{isExpanded ? <ChevronDown size={20}/> : <ChevronRight size={20}/>}</button>
+                      {isExpanded && <div className="p-2 space-y-1">{Object.entries(domains).map(([sub, subMembers]) => {
                         const isSubExp = activeSubKey === (key + sub) || searchTerm !== '';
                         const filteredSub = subMembers.filter(m => m.name.includes(searchTerm));
                         if (filteredSub.length === 0 && searchTerm) return null;
-                        return (<div key={sub} className="text-slate-900"><button onClick={(e) => toggleSub(e, key + sub)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-white rounded-xl text-base font-black text-slate-600 shadow-sm border border-transparent leading-none text-slate-900"><span>{sub}</span>{isSubExp ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}</button>
+                        return (<div key={sub}><button onClick={(e) => toggleSub(e, key + sub)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-white rounded-xl text-base font-black text-slate-600 shadow-sm border border-transparent leading-none text-slate-900"><span>{sub}</span>{isSubExp ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}</button>
                           {isSubExp && <div className="ml-4 border-l-2 border-slate-200 pl-2 mt-1 text-slate-900">{filteredSub.map(t => <TeacherItem key={t.id} t={t}/>)}</div>}</div>);
                       })}</div>}
                     </div>
@@ -620,12 +654,12 @@ export default function MainSystem() {
               })}
             </div>
           ) : (
-            <div className="space-y-4 p-1 pb-10 text-slate-900">
+            <div className="space-y-4 p-1 pb-10">
               {Object.entries(groupedClasses).map(([grade, list]) => (
                 <div key={grade} className="mb-4 bg-white rounded-2xl border-2 border-slate-200 shadow-sm overflow-hidden text-slate-900">
-                  <button onClick={() => setGradeExpanded(p => ({...p, [grade]: !p[grade]}))} className="w-full flex items-center justify-between p-5 bg-slate-50 font-black text-xl text-slate-800 leading-none text-slate-900">{grade} {gradeExpanded[grade] ? <ChevronDown /> : <ChevronRight />}</button>
-                  {gradeExpanded[grade] && <div className="p-4 grid grid-cols-3 gap-3 text-slate-900">
-                    {list.map(c => <button key={c.id} onClick={() => { setSelectedClass(c); setSelectedTeacher(null); setActiveView('schedule'); }} className={`py-4 rounded-xl text-lg font-black border-2 ${selectedClass?.id === c.id ? 'bg-[#1e40af] text-white border-blue-700 shadow-lg scale-105' : 'bg-white text-slate-700 border-slate-100 hover:border-blue-300 hover:bg-blue-50'} leading-none text-slate-900`}>{c.id}</button>)}
+                  <button onClick={() => setGradeExpanded(p => ({...p, [grade]: !p[grade]}))} className="w-full flex items-center justify-between p-5 bg-slate-50 font-black text-xl text-slate-800 leading-none">{grade} {gradeExpanded[grade] ? <ChevronDown /> : <ChevronRight />}</button>
+                  {gradeExpanded[grade] && <div className="p-4 grid grid-cols-3 gap-3">
+                    {list.map(c => <button key={c.id} onClick={() => { setSelectedClass(c); setSelectedTeacher(null); setActiveView('schedule'); }} className={`py-4 rounded-xl text-lg font-black border-2 ${selectedClass?.id === c.id ? 'bg-[#1e40af] text-white border-blue-700 shadow-lg scale-105' : 'bg-white text-slate-700 border-slate-100 hover:border-blue-300 hover:bg-blue-50'} leading-none`}>{c.id}</button>)}
                   </div>}
                 </div>
               ))}
@@ -634,12 +668,12 @@ export default function MainSystem() {
         </div>
         {isAdmin && (
           <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0 flex flex-col gap-2 text-slate-900">
-            <button onClick={handleFileExport} className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl cursor-pointer hover:border-green-500 hover:bg-green-50 group shadow-sm leading-none text-slate-900">
-              <Download className="text-slate-400 group-hover:scale-110 transition-all text-slate-400" size={24} />
+            <button onClick={handleFileExport} className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl cursor-pointer hover:border-green-500 hover:bg-green-50 group shadow-sm leading-none text-slate-900 font-sans">
+              <Download className="text-slate-400 group-hover:scale-110 transition-all" size={24} />
               <span className="font-black text-slate-600">配課表匯出</span>
             </button>
-            <label className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl cursor-pointer hover:border-blue-500 hover:bg-blue-50 group shadow-sm leading-none text-slate-900">
-              <Settings className="text-slate-400 group-hover:rotate-90 transition-all text-slate-400" size={24} />
+            <label className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl cursor-pointer hover:border-blue-500 hover:bg-blue-50 group shadow-sm leading-none text-slate-900 font-sans">
+              <Settings className="text-slate-400 group-hover:rotate-90 transition-all" size={24} />
               <span className="font-black text-slate-600">配課表匯入</span>
               <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} />
             </label>
@@ -647,11 +681,11 @@ export default function MainSystem() {
         )}
       </aside>
 
-      <main className="flex-1 flex flex-col h-screen overflow-hidden bg-slate-50 text-slate-900">
-        <header className="h-24 bg-white border-b-2 border-slate-200 flex items-center justify-between px-10 shadow-sm shrink-0 z-10 font-sans text-slate-900">
-          <div className="flex items-center gap-6 leading-none text-slate-900">
+      <main className="flex-1 flex flex-col h-screen overflow-hidden bg-slate-50 text-slate-900 font-serif">
+        <header className="h-24 bg-white border-b-2 border-slate-200 flex items-center justify-between px-10 shadow-sm shrink-0 z-10 font-sans">
+          <div className="flex items-center gap-6 leading-none">
             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-white shadow-xl ${sidebarMode === 'teacher' ? (selectedTeacher?.isAdjunct ? 'bg-slate-700' : 'bg-blue-900') : 'bg-blue-800'}`}><User size={32} className="text-white"/></div>
-            <div className="leading-tight font-serif text-slate-900"><h2 className="text-3xl font-black text-slate-900 tracking-tight mb-1 leading-none text-slate-900">{sidebarMode === 'teacher' ? (selectedTeacher?.name || '請由左側選擇') : (selectedClass?.name || '請由左側選擇')} 的週課表</h2><span className="text-blue-600 font-bold text-base">{sidebarMode === 'teacher' ? (selectedTeacher?.subject ? `${selectedTeacher.subject}科` : '') : (selectedClass?.grade || '')}</span></div>
+            <div className="leading-tight font-serif"><h2 className="text-3xl font-black text-slate-900 tracking-tight mb-1 leading-none">{sidebarMode === 'teacher' ? (selectedTeacher?.name || '請由左側選擇') : (selectedClass?.name || '請由左側選擇')} 的週課表</h2><span className="text-blue-600 font-bold text-base">{sidebarMode === 'teacher' ? (selectedTeacher?.subject ? `${selectedTeacher.subject}科` : '') : (selectedClass?.grade || '')}</span></div>
           </div>
           <div className="flex gap-3 leading-none text-slate-900 font-sans">
             {(isAdmin || dbData.isSimEnabled) && (
@@ -667,20 +701,15 @@ export default function MainSystem() {
                     }`}
                 >
                     {(!isAdmin && !dbData.isSimEnabled) && <Lock size={16} />}
-                    {isAdmin 
-                        ? (isEditMode ? '停止調課' : '智慧調課') 
-                        : (isEditMode ? '停止模擬' : '模擬調課')}
+                    {isAdmin ? (isEditMode ? '停止調課' : '智慧調課') : (isEditMode ? '停止模擬' : '模擬調課')}
                 </button>
             )}
 
-            {/* --- 新增：班級課表手動調動按鈕 --- */}
             {isAdmin && sidebarMode === 'class' && (
                 <button 
                     onClick={() => { setIsManualSwapMode(!isManualSwapMode); setSwapQueue([]); }}
                     className={`px-6 py-2.5 rounded-xl font-black text-sm transition-all border-2 flex items-center gap-2 leading-none ${
-                        isManualSwapMode 
-                            ? 'bg-green-600 text-white border-green-700 shadow-lg' 
-                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                        isManualSwapMode ? 'bg-green-600 text-white border-green-700 shadow-lg' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                     }`}
                 >
                     <ListChecks size={18} />
@@ -693,17 +722,16 @@ export default function MainSystem() {
           </div>
         </header>
 
-        {/* 手動模式浮動提示 */}
         {isManualSwapMode && (
-            <div className="bg-green-50 border-b border-green-200 px-10 py-3 flex items-center justify-between animate-in slide-in-from-top-4 duration-300">
+            <div className="bg-green-50 border-b border-green-200 px-10 py-3 flex items-center justify-between animate-in slide-in-from-top-4 duration-300 font-sans">
                 <div className="flex items-center gap-4 text-green-800 font-black text-lg">
                     <Zap className="text-green-600 animate-pulse" />
                     <span>手動路徑模式：請點選課程設定順序 ① → ② → ③ ... 完成後點擊右側按鈕。</span>
                     <span className="bg-green-200 px-3 py-1 rounded-full text-sm">已選取：{swapQueue.length} 站</span>
                 </div>
                 <div className="flex gap-3">
-                    <button onClick={() => { setIsManualSwapMode(false); setSwapQueue([]); }} className="px-6 py-2 bg-slate-200 text-slate-600 rounded-xl font-black hover:bg-slate-300 transition-all">取消</button>
-                    <button onClick={executeManualSwap} className="px-8 py-2 bg-green-600 text-white rounded-xl font-black hover:bg-green-700 shadow-lg transition-all flex items-center gap-2"><CheckCircle2 size={20}/> 完成調動</button>
+                    <button onClick={() => { setIsManualSwapMode(false); setSwapQueue([]); }} className="px-6 py-2 bg-slate-200 text-slate-600 rounded-xl font-black hover:bg-slate-300 transition-all font-sans">取消</button>
+                    <button onClick={executeManualSwap} className="px-8 py-2 bg-green-600 text-white rounded-xl font-black hover:bg-green-700 shadow-lg transition-all flex items-center gap-2 font-sans font-black"><CheckCircle2 size={20}/> 完成調動</button>
                 </div>
             </div>
         )}
@@ -711,7 +739,6 @@ export default function MainSystem() {
         {activeView === 'settings' ? (
           <div className="flex-1 p-10 overflow-y-auto bg-slate-50 custom-scrollbar pb-32 font-sans text-slate-900">
             <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 duration-500">
-              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-slate-900">
                 <div className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-8 relative flex flex-col gap-6 overflow-hidden">
                     <div className="absolute left-0 top-0 bottom-0 w-3 bg-purple-600"></div>
@@ -725,13 +752,12 @@ export default function MainSystem() {
                             </div>
                         </button>
                     </div>
-                    <div className="text-slate-900">
+                    <div className="text-slate-900 font-sans">
                         <h3 className="text-2xl font-black flex items-center gap-2 font-serif text-slate-900">填報功能管理 {dbData.isApplyEnabled ? <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full font-sans">開放</span> : <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full font-sans">關閉</span>}</h3>
                         <p className="text-slate-400 font-bold text-sm mt-1 leading-relaxed font-sans">控制一般老師是否能進入「自主調課表」填報頁面。</p>
                     </div>
                 </div>
-
-                <div className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-8 relative flex flex-col gap-6 overflow-hidden text-slate-900">
+                <div className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-8 relative flex flex-col gap-6 overflow-hidden text-slate-900 font-sans">
                     <div className="absolute left-0 top-0 bottom-0 w-3 bg-blue-600"></div>
                     <div className="flex items-center justify-between text-slate-900">
                         <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${dbData.isSimEnabled ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}>
@@ -744,88 +770,50 @@ export default function MainSystem() {
                         </button>
                     </div>
                     <div className="text-slate-900 font-sans">
-                        <h3 className="text-2xl font-black flex items-center gap-2 font-serif text-slate-900">模擬功能管理 {dbData.isSimEnabled ? <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full">開放</span> : <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full">鎖定</span>}</h3>
+                        <h3 className="text-2xl font-black flex items-center gap-2 font-serif text-slate-900">模擬功能管理 {dbData.isSimEnabled ? <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full font-sans">開放</span> : <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full font-sans">鎖定</span>}</h3>
                         <p className="text-slate-400 font-bold text-sm mt-1 leading-relaxed font-sans text-slate-400">關閉後，一般老師的「模擬調課」按鈕將會鎖定。</p>
                     </div>
                 </div>
               </div>
-
-              <div id="rule-form" className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-10 relative text-slate-900">
-                <h3 className="text-3xl font-black text-slate-800 flex items-center gap-3 mb-10 leading-none font-serif text-slate-900">{editingRuleId ? <Edit2 size={32} className="text-orange-600"/> : <Plus size={32} className="text-blue-600"/>} {editingRuleId ? '修改排課禁區規則' : '新增排課禁區規則'}</h3>
+              <div id="rule-form" className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-10 relative text-slate-900 font-serif">
+                <h3 className="text-3xl font-black text-slate-800 flex items-center gap-3 mb-10 leading-none font-serif">{editingRuleId ? <Edit2 size={32} className="text-orange-600"/> : <Plus size={32} className="text-blue-600"/>} {editingRuleId ? '修改排課禁區規則' : '新增排課禁區規則'}</h3>
                 <div className="space-y-8">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                    <div className="text-slate-900">
+                    <div className="text-slate-900 font-sans">
                       <label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase text-slate-400">適用範圍</label>
-                      <div className="flex gap-2 text-slate-900">
+                      <div className="flex gap-2">
                         <button onClick={() => setNewRule({...newRule, type:'all'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='all'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>全校</button>
                         <button onClick={() => setNewRule({...newRule, type:'grade'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='grade'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>特定年級</button>
                         <button onClick={() => setNewRule({...newRule, type:'classes'})} className={`flex-1 py-4 rounded-xl border-2 font-black leading-none ${newRule.type==='classes'?'bg-blue-50 border-blue-600 text-blue-700':'bg-white border-slate-100 text-slate-400'}`}>特定班級</button>
                       </div>
-                      <div className="mt-4 text-slate-900">
+                      <div className="mt-4 font-sans">
                         {newRule.type === 'grade' && <select className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg text-slate-900 font-sans" value={newRule.target} onChange={e=>setNewRule({...newRule, target:e.target.value})}><option value="1">高一年級</option><option value="2">高二年級</option><option value="3">高三年級</option></select>}
-                        {newRule.type === 'classes' && <input type="text" placeholder="例如: 201、202-205" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg text-slate-900" value={newRule.classList} onChange={e=>setNewRule({...newRule, classList:e.target.value})} />}
+                        {newRule.type === 'classes' && <input type="text" placeholder="例如: 201、202-205" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg text-slate-900 font-sans" value={newRule.classList} onChange={e=>setNewRule({...newRule, classList:e.target.value})} />}
                       </div>
                     </div>
-                    <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase leading-none text-slate-400">規則說明</label><input type="text" placeholder="說明" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg h-16 text-slate-900" value={newRule.desc} onChange={e=>setNewRule({...newRule, desc:e.target.value})} /></div>
+                    <div><label className="block text-sm font-black text-slate-400 mb-4 tracking-widest uppercase leading-none text-slate-400 font-sans">規則說明</label><input type="text" placeholder="說明" className="w-full p-4 bg-slate-100 rounded-xl border-none font-black text-lg h-16 text-slate-900 font-sans" value={newRule.desc} onChange={e=>setNewRule({...newRule, desc:e.target.value})} /></div>
                   </div>
-
-                  <div className="space-y-6">
-                      <label className="block text-sm font-black text-slate-400 tracking-widest uppercase flex items-center gap-2 text-slate-400 font-sans">
-                        <Clock size={16}/> 規則生效時段
-                      </label>
+                  <div className="space-y-6 text-slate-900 font-sans">
+                      <label className="block text-sm font-black text-slate-400 tracking-widest uppercase flex items-center gap-2 text-slate-400 font-sans"><Clock size={16}/> 規則生效時段</label>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-8 text-slate-900">
                           <div className="space-y-4">
                               <span className="text-xs font-black text-slate-400 uppercase tracking-tighter">生效星期</span>
-                              <div className="flex flex-wrap gap-2 text-slate-900 font-sans">
-                                  {DAYS.map((d, i) => {
-                                      const isSel = newRule.days.includes(i);
-                                      return (
-                                          <button 
-                                            key={d} 
-                                            onClick={() => setNewRule({ ...newRule, days: isSel ? newRule.days.filter(x => x !== i) : [...newRule.days, i]})}
-                                            className={`px-4 py-2 rounded-xl font-black border-2 transition-all ${isSel ? 'bg-blue-600 border-blue-700 text-white' : 'bg-white border-slate-200 text-slate-400'}`}
-                                          >{d}</button>
-                                      );
-                                  })}
-                              </div>
+                              <div className="flex flex-wrap gap-2 text-slate-900 font-sans">{DAYS.map((d, i) => { const isSel = newRule.days.includes(i); return (<button key={d} onClick={() => setNewRule({ ...newRule, days: isSel ? newRule.days.filter(x => x !== i) : [...newRule.days, i]})} className={`px-4 py-2 rounded-xl font-black border-2 transition-all ${isSel ? 'bg-blue-600 border-blue-700 text-white' : 'bg-white border-slate-200 text-slate-400'}`}>{d}</button>);})}</div>
                           </div>
                           <div className="space-y-4">
                               <span className="text-xs font-black text-slate-400 uppercase tracking-tighter">生效節次</span>
-                              <div className="flex flex-wrap gap-2 text-slate-900 font-sans">
-                                  {PERIODS.filter(p => !p.isRest).map((p) => {
-                                      const isSel = newRule.periods.includes(p.id);
-                                      return (
-                                          <button 
-                                            key={p.id} 
-                                            onClick={() => setNewRule({ ...newRule, periods: isSel ? newRule.periods.filter(x => x !== p.id) : [...newRule.periods, p.id]})}
-                                            className={`px-3 py-2 rounded-xl font-black border-2 transition-all text-sm ${isSel ? 'bg-indigo-600 border-indigo-700 text-white' : 'bg-white border-slate-200 text-slate-400'}`}
-                                          >{p.label.replace(/[^0-9]/g, '')}</button>
-                                      );
-                                  })}
-                              </div>
+                              <div className="flex flex-wrap gap-2 text-slate-900 font-sans">{PERIODS.filter(p => !p.isRest).map((p) => { const isSel = newRule.periods.includes(p.id); return (<button key={p.id} onClick={() => setNewRule({ ...newRule, periods: isSel ? newRule.periods.filter(x => x !== p.id) : [...newRule.periods, p.id]})} className={`px-3 py-2 rounded-xl font-black border-2 transition-all text-sm ${isSel ? 'bg-indigo-600 border-indigo-700 text-white' : 'bg-white border-slate-200 text-slate-400'}`}>{p.label.replace(/[^0-9]/g, '')}</button>);})}</div>
                           </div>
                       </div>
                   </div>
-
-                  <div className="flex gap-4">
-                    <button onClick={async () => { 
-                      if(!newRule.desc || newRule.days.length===0 || newRule.periods.length === 0) return alert('請填寫說明並選取生效的星期與節次'); 
-                      const targetVal = newRule.type==='grade'?newRule.target:(newRule.type==='classes'?newRule.classList:'全校'); 
-                      let updated;
-                      if (editingRuleId) { updated = constraints.map(c => c.id === editingRuleId ? { ...newRule, id: editingRuleId, target: targetVal } : c); }
-                      else { updated = [...constraints, { ...newRule, id: Date.now(), target: targetVal }]; }
-                      setConstraints(updated); 
-                      await setDoc(doc(db, "schools", currentSchool.id), { ...dbData, constraints: updated });
-                      setNewRule({type: 'classes', target: '1', classList: '', days: [], periods: [], desc: ''}); 
-                      setEditingRuleId(null);
-                    }} className={`flex-1 py-6 ${editingRuleId ? 'bg-orange-600' : 'bg-blue-900'} text-white rounded-[2rem] font-black text-2xl shadow-2xl transition-all leading-none font-serif text-white`}>
+                  <div className="flex gap-4 font-sans font-black">
+                    <button onClick={async () => { if(!newRule.desc || newRule.days.length===0 || newRule.periods.length === 0) return alert('資訊不全'); const targetVal = newRule.type==='grade'?newRule.target:(newRule.type==='classes'?newRule.classList:'全校'); let updated; if (editingRuleId) { updated = constraints.map(c => c.id === editingRuleId ? { ...newRule, id: editingRuleId, target: targetVal } : c); } else { updated = [...constraints, { ...newRule, id: Date.now(), target: targetVal }]; } setConstraints(updated); await setDoc(doc(db, "schools", currentSchool.id), { ...dbData, constraints: updated }); setNewRule({type: 'classes', target: '1', classList: '', days: [], periods: [], desc: ''}); setEditingRuleId(null); }} className={`flex-1 py-6 ${editingRuleId ? 'bg-orange-600' : 'bg-blue-900'} text-white rounded-[2rem] font-black text-2xl shadow-2xl transition-all leading-none font-serif text-white`}>
                       {editingRuleId ? '儲存修改' : '加入排課規則'}
                     </button>
                     {editingRuleId && <button onClick={() => { setEditingRuleId(null); setNewRule({type: 'classes', target: '1', classList: '', days: [], periods: [], desc: ''}); }} className="px-10 py-6 bg-slate-200 text-slate-600 rounded-[2rem] font-black text-2xl shadow-lg font-serif">取消編輯</button>}
                   </div>
                 </div>
               </div>
-              {/* 已啟用規則清單略... */}
             </div>
           </div>
         ) : (
@@ -848,45 +836,20 @@ export default function MainSystem() {
                         const items = getCellDataFn(dIdx, period.id);
                         const currentClassId = sidebarMode === 'class' ? selectedClass?.id : items[0]?.classId;
                         const lockRule = checkIsLocked(currentClassId, dIdx, period.id);
-                        
-                        // --- 檢查手動模式下是否已被選中 ---
                         const swapIdx = swapQueue.findIndex(q => q.day === dIdx && q.period === period.id);
-
                         return (
-                          <div 
-                            key={dIdx} 
+                          <div key={dIdx} 
                             onClick={() => isManualSwapMode && handleManualSlotClick(dIdx, period.id, items[0])}
-                            onDragOver={e => e.preventDefault()} 
-                            onDrop={() => isEditMode && handleDrop(dIdx, period.id)} 
-                            className={`border-r-2 border-slate-300 last:border-r-0 flex flex-col items-center justify-center text-center transition-all relative overflow-hidden 
-                                ${lockRule ? 'bg-slate-50 cursor-not-allowed' : 'bg-white'} 
-                                ${isEditMode && !lockRule ? 'hover:bg-blue-50/30' : ''}
-                                ${isManualSwapMode && !lockRule ? 'cursor-pointer hover:bg-green-50 ring-inset' : ''}
-                                ${swapIdx !== -1 ? 'ring-4 ring-green-500 z-10 bg-green-50/50' : ''}
-                            `}
-                          >
-                            {/* 手動模式選取編號標籤 */}
-                            {swapIdx !== -1 && (
-                                <div className="absolute top-2 left-2 w-7 h-7 bg-green-600 text-white rounded-full flex items-center justify-center font-black text-xs shadow-lg animate-in zoom-in duration-200">
-                                    {swapIdx + 1}
-                                </div>
-                            )}
-
+                            onDragOver={e => e.preventDefault()} onDrop={() => isEditMode && handleDrop(dIdx, period.id)} 
+                            className={`border-r-2 border-slate-300 last:border-r-0 flex flex-col items-center justify-center text-center transition-all relative overflow-hidden ${lockRule ? 'bg-slate-50 cursor-not-allowed' : 'bg-white'} ${isEditMode && !lockRule ? 'hover:bg-blue-50/30' : ''} ${isManualSwapMode && !lockRule ? 'cursor-pointer hover:bg-green-50 ring-inset' : ''} ${swapIdx !== -1 ? 'ring-4 ring-green-500 z-10 bg-green-50/50' : ''}`}>
+                            {swapIdx !== -1 && <div className="absolute top-2 left-2 w-7 h-7 bg-green-600 text-white rounded-full flex items-center justify-center font-black text-xs shadow-lg animate-in zoom-in duration-200">{swapIdx + 1}</div>}
                             {lockRule && <div className="absolute inset-0 opacity-5 pointer-events-none" style={{backgroundImage: 'repeating-linear-gradient(45deg, #000 0, #000 1px, transparent 0, transparent 50%)', backgroundSize: '10px 10px'}}></div>}
-                            {lockRule ? <div className="flex flex-col items-center gap-1 opacity-70 px-1 leading-tight shrink-0 text-slate-500"><Lock size={22} className="text-slate-500" /><span className="text-[14px] font-black text-slate-600 uppercase tracking-tighter truncate max-w-full leading-tight font-sans text-center">{lockRule.desc}</span></div> : 
+                            {lockRule ? <div className="flex flex-col items-center gap-1 opacity-70 px-1 text-slate-500"><Lock size={22}/><span className="text-[14px] font-black uppercase tracking-tighter truncate max-w-full font-sans text-center">{lockRule.desc}</span></div> : 
                               items.map((item, idx) => (
                                 <div key={idx} onDoubleClick={() => handleCellDoubleClick(item)} draggable={isEditMode} onDragStart={() => setDraggedItem(item)} className={`w-full px-1 flex flex-col items-center justify-center select-none ${isEditMode ? 'cursor-grab active:cursor-grabbing hover:scale-105 transition-transform' : ''}`}>
-                                  {sidebarMode === 'teacher' ? (
-                                    <><div className="font-black text-blue-900 text-3xl tracking-tighter leading-none mb-1 font-sans text-blue-900">{item.classId!=="未知"?item.classId:""}</div><div className="px-3 py-1 bg-blue-900 text-white text-[11px] font-black rounded-lg shadow-sm inline-block uppercase truncate max-w-full leading-none font-sans"> {item.subject}</div></>
-                                  ) : (
-                                    <div className="w-full flex flex-col items-center px-1 text-slate-900">
-                                      <div className="font-black text-slate-800 text-lg md:text-xl lg:text-2xl tracking-tighter leading-tight mb-1 truncate max-w-full text-center font-sans text-slate-800">{item.subject}</div>
-                                      <div className="px-2 py-0.5 bg-slate-800 text-white text-[10px] font-black rounded-md shadow-sm inline-block truncate max-w-[90%] text-center mt-0.5 opacity-90 font-sans text-white">{item.teacherName}</div>
-                                    </div>
-                                  )}
+                                  {sidebarMode === 'teacher' ? (<><div className="font-black text-blue-900 text-3xl tracking-tighter mb-1 font-sans">{item.classId!=="未知"?item.classId:""}</div><div className="px-3 py-1 bg-blue-900 text-white text-[11px] font-black rounded-lg shadow-sm font-sans uppercase truncate max-w-full">{item.subject}</div></>) : (<div className="w-full flex flex-col items-center px-1"><div className="font-black text-slate-800 text-lg md:text-xl lg:text-2xl tracking-tighter leading-tight mb-1 truncate max-w-full font-sans text-center">{item.subject}</div><div className="px-2 py-0.5 bg-slate-800 text-white text-[10px] font-black rounded-md shadow-sm opacity-90 font-sans truncate max-w-[90%] text-center">{item.teacherName}</div></div>)}
                                 </div>
-                              ))
-                            }
+                              ))}
                           </div>
                         );
                       })
@@ -900,83 +863,40 @@ export default function MainSystem() {
         )}
       </main>
 
-      {/* 方案預覽彈窗 (其餘內容維持不變) */}
       {proposals.length > 0 && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[60] p-4 font-sans overflow-hidden text-slate-900">
           <div className="bg-[#f8fafc] rounded-[3.5rem] shadow-2xl border-4 border-blue-900 w-full max-w-6xl h-[95vh] flex flex-col overflow-hidden animate-in zoom-in duration-300">
             <div className="py-3 px-6 bg-white border-b-2 border-slate-200 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-3 leading-none text-slate-900">
-                <div className="w-10 h-10 bg-blue-50 text-blue-900 rounded-xl flex items-center justify-center shadow-inner shrink-0 font-black"><GitBranch size={22} className="text-blue-900" /></div>
-                <div><h3 className="text-xl font-black text-slate-800 tracking-tighter text-slate-900">{isAdmin ? '智慧調課預覽分析' : '模擬調課結果預覽'}</h3><p className="text-slate-400 font-bold text-xs font-sans text-slate-400">分析已完成</p></div>
-              </div>
-              <button onClick={() => { setProposals([]); setPreviewProposal(null); }} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all text-slate-400 font-black"><X size={24}/></button>
+              <div className="flex items-center gap-3"><div className="w-10 h-10 bg-blue-50 text-blue-900 rounded-xl flex items-center justify-center shadow-inner font-black"><GitBranch size={22}/></div><div><h3 className="text-xl font-black text-slate-800">{isAdmin ? '智慧調課預覽分析' : '模擬調課結果預覽'}</h3><p className="text-slate-400 font-bold text-xs">分析已完成</p></div></div>
+              <button onClick={() => { setProposals([]); setPreviewProposal(null); }} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all font-black"><X size={24}/></button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-slate-50 flex flex-col text-slate-900">
+            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-slate-50 flex flex-col">
               {previewProposal ? (
-                <div className="animate-in slide-in-from-right-4 duration-500 flex flex-col h-full text-slate-900">
-                    <div ref={exportRef} className="p-4 bg-slate-50 flex flex-col gap-4 text-slate-900">
-                        <div className="bg-white p-3 rounded-2xl border-2 border-blue-600 shadow-lg shrink-0 text-slate-900">
-                            <div className="flex items-center gap-3 mb-2 text-slate-900">
-                              <span className="text-blue-600 font-black text-xs uppercase tracking-widest bg-blue-50 px-3 py-1 rounded-full border border-blue-100 font-sans text-blue-600 font-black">預覽方案：{previewProposal.title}</span>
-                              <span className="text-orange-500 font-black text-2xl font-serif text-orange-500 font-black">{previewProposal.letter} 方案</span>
-                            </div>
-                            <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-100 pt-2 text-slate-900">
-                                {previewProposal.actions.map((act, idx) => {
-                                    const warning = getSlotWarning(act.t, act.d, act.p);
-                                    return (
-                                    <div key={idx} className="flex items-center gap-2 text-slate-800 font-black text-base font-serif text-slate-800 font-black">
-                                        <span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(p => p.id === act.p)?.label}</span>
-                                        {warning && <span className="px-1.5 py-0.5 border border-orange-500 text-orange-600 text-[10px] font-black rounded bg-orange-50/50 whitespace-nowrap font-sans">{warning}</span>}
-                                    </div>
-                                    )
-                                })}
-                            </div>
+                <div className="animate-in slide-in-from-right-4 duration-500 flex flex-col h-full">
+                    <div ref={exportRef} className="p-4 bg-slate-50 flex flex-col gap-4">
+                        <div className="bg-white p-3 rounded-2xl border-2 border-blue-600 shadow-lg shrink-0">
+                            <div className="flex items-center gap-3 mb-2"><span className="text-blue-600 font-black text-xs uppercase bg-blue-50 px-3 py-1 rounded-full border border-blue-100 font-sans">預覽方案：{previewProposal.title}</span><span className="text-orange-500 font-black text-2xl font-serif">{previewProposal.letter} 方案</span></div>
+                            <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-100 pt-2">{previewProposal.actions.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 text-slate-800 font-black text-base font-serif"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(p => p.id === act.p)?.label}</span>{warning && <span className="px-1.5 py-0.5 border border-orange-500 text-orange-600 text-[10px] font-black rounded bg-orange-50/50 whitespace-nowrap">{warning}</span>}</div>)})}</div>
                         </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 min-h-0 text-slate-900">
-                            {Array.from(new Set(previewProposal.actions.map(a => a.t))).map(tName => (
-                                <PreviewGrid key={tName} teacherName={tName} moves={previewProposal.actions} />
-                            ))}
-                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 min-h-0 text-slate-900">{Array.from(new Set(previewProposal.actions.map(a => a.t))).map(tName => (<PreviewGrid key={tName} teacherName={tName} moves={previewProposal.actions} />))}</div>
                     </div>
                     <div className="flex flex-wrap justify-center items-center gap-3 py-4 mt-auto shrink-0 border-t border-slate-200 bg-white/50 rounded-b-[2.5rem]">
-                        <button onClick={() => setPreviewProposal(null)} className="flex items-center gap-2 px-5 py-3 bg-slate-200 text-slate-600 rounded-xl font-black text-lg hover:bg-slate-300 transition-all shadow-sm font-sans font-black text-slate-600"><ArrowRight size={20} className="rotate-180" /> 返回列表</button>
-                        <button onClick={handleSaveAsImage} className="flex items-center gap-2 px-5 py-3 bg-white text-blue-600 border-2 border-blue-200 rounded-xl font-black text-lg hover:bg-blue-50 transition-all shadow-sm font-sans text-blue-600 font-black"><Camera size={20} /> 另存圖片</button>
-                        {isAdmin ? (
-                            <button onClick={executeFinalAdopt} className="flex items-center gap-3 px-10 py-3.5 bg-blue-900 text-white rounded-xl font-black text-xl shadow-lg hover:bg-blue-800 hover:-translate-y-1 transition-all border-b-4 border-blue-950 font-sans text-white font-black">採用此方案 <CheckCircle2 size={24}/></button>
-                        ) : (
-                            <div className="flex flex-col items-center px-6">
-                                {dbData.isApplyEnabled ? (
-                                    <><span className="text-purple-700 font-black text-sm mb-1 uppercase tracking-widest animate-pulse font-serif text-purple-700 font-black">模擬完成！如需正式調動：</span><Link to="/apply" className="bg-purple-600 text-white px-8 py-3 rounded-xl font-black hover:bg-purple-700 shadow-lg transition-all flex items-center gap-2 font-serif font-black text-white font-black">前往填寫「自主調課表」 <ArrowRight size={20}/></Link></>
-                                ) : (
-                                    <div className="flex items-center gap-2 px-8 py-3 bg-slate-100 text-slate-400 rounded-xl font-black border-2 border-slate-200 font-serif text-slate-400 font-black"><Lock size={18} /> 目前非自主調課時段</div>
-                                )}
-                            </div>
-                        )}
-                        <button onClick={() => { setProposals([]); setPreviewProposal(null); }} className="flex items-center gap-2 px-5 py-3 bg-red-50 text-red-500 border border-red-100 rounded-xl font-black text-lg hover:bg-red-500 hover:text-white transition-all shadow-sm font-sans font-black text-red-500"><Trash2 size={20} /> 放棄調動</button>
+                        <button onClick={() => setPreviewProposal(null)} className="flex items-center gap-2 px-5 py-3 bg-slate-200 text-slate-600 rounded-xl font-black text-lg hover:bg-slate-300 transition-all font-sans"><ArrowRight size={20} className="rotate-180" /> 返回列表</button>
+                        <button onClick={handleSaveAsImage} className="flex items-center gap-2 px-5 py-3 bg-white text-blue-600 border-2 border-blue-200 rounded-xl font-black text-lg hover:bg-blue-50 transition-all shadow-sm font-sans"><Camera size={20} /> 另存圖片</button>
+                        {isAdmin ? (<button onClick={executeFinalAdopt} className="flex items-center gap-3 px-10 py-3.5 bg-blue-900 text-white rounded-xl font-black text-xl shadow-lg hover:bg-blue-800 hover:-translate-y-1 transition-all border-b-4 border-blue-950 font-sans">採用此方案 <CheckCircle2 size={24}/></button>) : (<div className="flex flex-col items-center px-6">{dbData.isApplyEnabled ? (<><span className="text-purple-700 font-black text-sm mb-1 uppercase tracking-widest animate-pulse font-serif">模擬完成！如需正式調動：</span><Link to="/apply" className="bg-purple-600 text-white px-8 py-3 rounded-xl font-black hover:bg-purple-700 shadow-lg transition-all flex items-center gap-2 font-serif font-black">前往填寫「自主調課表」 <ArrowRight size={20}/></Link></>) : (<div className="flex items-center gap-2 px-8 py-3 bg-slate-100 text-slate-400 rounded-xl font-black border-2 border-slate-200 font-serif"><Lock size={18} /> 目前非自主調課時段</div>)}</div>)}
+                        <button onClick={() => { setProposals([]); setPreviewProposal(null); }} className="flex items-center gap-2 px-5 py-3 bg-red-50 text-red-500 border border-red-100 rounded-xl font-black text-lg hover:bg-red-500 hover:text-white transition-all font-sans font-black"><Trash2 size={20} /> 放棄調動</button>
                     </div>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-slate-900">
                   {proposals.map((p, i) => (
                     <div key={i} className={`p-6 rounded-3xl border-2 bg-white flex flex-col justify-between transition-all shadow-lg group hover:border-blue-900 hover:shadow-2xl text-slate-900`}>
-                      <div className="flex items-start gap-4 mb-4 text-slate-900">
-                        <div className="mt-1 text-slate-900">{p.type === 'MOVE' ? <CheckCircle2 className="text-green-600" size={32} /> : p.type === 'SWAP' ? <ArrowRightLeft className="text-indigo-600" size={32} /> : p.type === 'TRIANGLE' ? <RefreshCw className="text-purple-600 animate-spin-slow" size={32} /> : <XCircle className="text-red-600" size={32} />}</div>
-                        <div className="flex-1 text-slate-900">
-                          <div className="flex justify-between items-center mb-2 font-serif text-slate-900 font-black"><span className="font-black text-xl text-slate-800">{String.fromCharCode(65 + i)} 方案：{p.title}</span><span className={`text-[10px] font-black px-2 py-0.5 rounded-full text-white font-sans ${p.color==='blue'?'bg-blue-600':p.color==='indigo'?'bg-indigo-600':p.color==='purple'?'bg-purple-600':'bg-red-600'}`}>{p.impact}</span></div>
-                          <div className="space-y-1.5 mt-2 text-slate-900">
-                            {p.actions?.map((act, idx) => {
-                              const warning = getSlotWarning(act.t, act.d, act.p);
-                              return (
-                                <div key={idx} className="flex items-center gap-2 flex-wrap text-slate-600 font-bold text-lg font-serif font-black">
-                                  <span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(per => per.id === act.p)?.label}</span>
-                                  {warning && <span className="px-1.5 py-0.5 border border-orange-500 text-orange-600 text-[10px] font-black rounded bg-orange-50/30 whitespace-nowrap font-sans">{warning}</span>}
-                                </div>
-                              );
-                            })}
-                          </div>
+                      <div className="flex items-start gap-4 mb-4 text-slate-900"><div className="mt-1 text-slate-900">{p.type === 'MOVE' ? <CheckCircle2 className="text-green-600" size={32} /> : p.type === 'SWAP' ? <ArrowRightLeft className="text-indigo-600" size={32} /> : p.type === 'TRIANGLE' ? <RefreshCw className="text-purple-600 animate-spin-slow" size={32} /> : <XCircle className="text-red-600" size={32} />}</div>
+                        <div className="flex-1 text-slate-900"><div className="flex justify-between items-center mb-2 font-serif font-black"><span className="font-black text-xl text-slate-800">{String.fromCharCode(65 + i)} 方案：{p.title}</span><span className={`text-[10px] font-black px-2 py-0.5 rounded-full text-white font-sans ${p.color==='blue'?'bg-blue-600':p.color==='indigo'?'bg-indigo-600':p.color==='purple'?'bg-purple-600':'bg-red-600'}`}>{p.impact}</span></div>
+                          <div className="space-y-1.5 mt-2 text-slate-900">{p.actions?.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 flex-wrap text-slate-600 font-bold text-lg font-serif font-black"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(per => per.id === act.p)?.label}</span>{warning && <span className="px-1.5 py-0.5 border border-orange-500 text-orange-600 text-[10px] font-black rounded bg-orange-50/30 whitespace-nowrap font-sans">{warning}</span>}</div>);})}</div>
                         </div>
                       </div>
-                      {!p.disabled && <button onClick={() => setPreviewProposal({ ...p, letter: String.fromCharCode(65 + i) })} className="mt-3 w-full bg-slate-800 text-white py-4 rounded-xl font-black text-xl hover:bg-black transition-all flex items-center justify-center gap-2 font-serif font-black text-white font-black">預覽方案結果 <ArrowRight size={24}/></button>}
+                      {!p.disabled && <button onClick={() => setPreviewProposal({ ...p, letter: String.fromCharCode(65 + i) })} className="mt-3 w-full bg-slate-800 text-white py-4 rounded-xl font-black text-xl hover:bg-black transition-all flex items-center justify-center gap-2 font-serif font-black text-white">預覽方案結果 <ArrowRight size={24}/></button>}
                     </div>
                   ))}
                 </div>
