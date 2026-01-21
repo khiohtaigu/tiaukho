@@ -4,14 +4,14 @@ import { Link } from 'react-router-dom';
 import { 
   Calendar, Search, ChevronDown, ChevronRight,
   RefreshCw, User, BookOpen, Layers,
-  Settings, Lock, Plus, Trash2, Globe, CheckCircle2, XCircle, ArrowRightLeft, School, ArrowRight, X, MousePointerClick, Upload, GitBranch, Edit2, AlertCircle, Download, Camera, Monitor, ToggleRight, ToggleLeft, Zap, Clock, ListChecks
+  Settings, Lock, Plus, Trash2, Globe, CheckCircle2, XCircle, ArrowRightLeft, School, ArrowRight, X, MousePointerClick, Upload, GitBranch, Edit2, AlertCircle, Download, Camera, Monitor, ToggleRight, ToggleLeft, Zap, Clock, ListChecks, Eye
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
 
 // 引入 Firebase
 import { db } from './firebase';
-import { doc, setDoc, onSnapshot, updateDoc } from "firebase/firestore";
+import { doc, setDoc, onSnapshot, updateDoc, increment } from "firebase/firestore";
 
 // --- 常數定義 ---
 const DAYS = ['週一', '週二', '週三', '週四', '週五'];
@@ -76,6 +76,9 @@ export default function MainSystem() {
   const [draggedItem, setDraggedItem] = useState(null);
   const [previewProposal, setPreviewProposal] = useState(null);
 
+  // 訪問計數器狀態
+  const [visitCount, setVisitCount] = useState(0);
+
   const exportRef = useRef(null);
 
   // ----------------------------------------------------------------
@@ -96,19 +99,11 @@ export default function MainSystem() {
     teachers.forEach(t => {
       const targetBuckets = [];
       const teachesNativeInSchedule = schedules.some(s => s.teacherName === t.name && s.subject?.includes('本土語'));
-
-      if (t.teachesNative || t.subject === '本土語' || teachesNativeInSchedule) {
-        targetBuckets.push({ type: 'core', key: '本土語' });
-      }
-
+      if (t.teachesNative || t.subject === '本土語' || teachesNativeInSchedule) targetBuckets.push({ type: 'core', key: '本土語' });
       if (t.subject === '音樂') targetBuckets.push({ type: 'domain', domain: '藝能科', sub: '音樂' });
       if (t.subject === '藝術與生活' || t.subject === '藝術生活') targetBuckets.push({ type: 'domain', domain: '藝能科', sub: '藝術生活' });
-
-      if (['自然科', '社會科', '藝能科'].includes(t.domain)) {
-        targetBuckets.push({ type: 'domain', domain: t.domain, sub: t.subject });
-      } else {
-        if (t.subject !== '本土語') targetBuckets.push({ type: 'core', key: t.subject });
-      }
+      if (['自然科', '社會科', '藝能科'].includes(t.domain)) targetBuckets.push({ type: 'domain', domain: t.domain, sub: t.subject });
+      else if (t.subject !== '本土語') targetBuckets.push({ type: 'core', key: t.subject });
 
       Array.from(new Set(targetBuckets.map(JSON.stringify))).map(JSON.parse).forEach(b => {
         if (b.type === 'core') {
@@ -143,15 +138,17 @@ export default function MainSystem() {
   }, [classes]);
 
   /**
-   * getSlotWarning - 絕對警示邏輯
+   * 絕對警示邏輯 - 包含團體活動、輔導課、領域時間
    */
   const getSlotWarning = (teacherName, dayIdx, periodId) => {
     const d = Number(dayIdx);
     const p = Number(periodId);
 
+    // 1. 全校性規則
     if (p === 9) return "輔導課";
     if (d === 4 && (p === 7 || p === 8)) return "團體活動";
 
+    // 2. 領域時間規則
     if (!teacherName) return null;
     const teacher = teachers.find(t => String(t.name).trim() === String(teacherName).trim());
     const tDom = (teacher?.domain || "").trim();
@@ -166,17 +163,25 @@ export default function MainSystem() {
     return null;
   };
 
+  // ----------------------------------------------------------------
+  // 3. 核心功能
+  // ----------------------------------------------------------------
+  
+  // 訪問計數器邏輯
+  useEffect(() => {
+    const statsRef = doc(db, "stats", "visits");
+    updateDoc(statsRef, { count: increment(1) }).catch(() => { setDoc(statsRef, { count: 1 }, { merge: true }); });
+    const unsub = onSnapshot(statsRef, (snap) => { if (snap.exists()) setVisitCount(snap.data().count); });
+    return () => unsub();
+  }, []);
+
   useEffect(() => {
     if (!currentSchool) return;
     setIsLoading(true);
     const unsub = onSnapshot(doc(db, "schools", currentSchool.id), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        setDbData({
-            ...data,
-            isApplyEnabled: data.isApplyEnabled !== undefined ? data.isApplyEnabled : true,
-            isSimEnabled: data.isSimEnabled !== undefined ? data.isSimEnabled : true
-        });
+        setDbData({ ...data, isApplyEnabled: data.isApplyEnabled !== undefined ? data.isApplyEnabled : true, isSimEnabled: data.isSimEnabled !== undefined ? data.isSimEnabled : true });
         setConstraints(data.constraints || []);
       } else {
         setDbData({ teachers: [], schedules: [], classes: [], constraints: [], domainWarnings: [], isApplyEnabled: true, isSimEnabled: true });
@@ -186,26 +191,19 @@ export default function MainSystem() {
     return () => unsub();
   }, [currentSchool]);
 
-  // ----------------------------------------------------------------
-  // 3. 核心功能
-  // ----------------------------------------------------------------
-  
   const handleSaveAsImage = async () => {
     if (!exportRef.current) return;
     try {
       const canvas = await html2canvas(exportRef.current, { scale: 2, backgroundColor: "#f8fafc", useCORS: true });
       const image = canvas.toDataURL("image/png");
       const link = document.createElement("a");
-      link.href = image;
-      link.download = `${currentSchool.name}_${previewProposal ? previewProposal.letter : '模擬'}_調課分析.png`;
-      link.click();
+      link.href = image; link.download = `${currentSchool.name}_${previewProposal ? previewProposal.letter : '模擬'}_調課分析.png`; link.click();
     } catch (err) { alert("另存圖片失敗，請重試"); }
   };
 
   const handleToggleState = async (field) => {
     if (!isAdmin) return;
-    try { await updateDoc(doc(db, "schools", currentSchool.id), { [field]: !dbData[field] }); } 
-    catch (e) { alert("更新開關失敗"); }
+    try { await updateDoc(doc(db, "schools", currentSchool.id), { [field]: !dbData[field] }); } catch (e) { alert("更新開關失敗"); }
   };
 
   const checkIsLocked = (classId, dayIdx, periodId) => {
@@ -247,12 +245,9 @@ export default function MainSystem() {
     const nextSchedules = [...schedules];
     const affectedIds = swapQueue.filter(q => q.item).map(q => q.item.id);
     for (let i = 0; i < swapQueue.length; i++) {
-        const source = swapQueue[i];
-        const target = swapQueue[(i + 1) % swapQueue.length]; 
-        if (source.item) {
-            if (!isSlotAvailable(source.item.teacherName, source.item.classId, target.day, target.period, affectedIds)) {
-                return alert(`調動失敗：${source.item.teacherName} 或 班級 ${source.item.classId} 有衝突。`);
-            }
+        const source = swapQueue[i], target = swapQueue[(i + 1) % swapQueue.length]; 
+        if (source.item && !isSlotAvailable(source.item.teacherName, source.item.classId, target.day, target.period, affectedIds)) {
+            return alert(`調動失敗：${source.item.teacherName} 或 班級 ${source.item.classId} 有衝突。`);
         }
     }
     swapQueue.forEach((source, i) => {
@@ -270,7 +265,7 @@ export default function MainSystem() {
   };
 
   const analyzeMove = (source, targetDay, targetPeriod) => {
-    const srcDay = source.day; const srcPeriod = source.period; const teacherA = source.teacherName;
+    const srcDay = source.day, srcPeriod = source.period, teacherA = source.teacherName;
     const options = [];
     const occupantInTarget = schedules.find(s => s.classId === source.classId && s.day === targetDay && s.period === targetPeriod);
     if (!occupantInTarget && isSlotAvailable(teacherA, source.classId, targetDay, targetPeriod, [source.id])) {
@@ -291,23 +286,38 @@ export default function MainSystem() {
     setProposals(options);
   };
 
+  const handleDrop = (targetDay, targetPeriod) => {
+    if (!draggedItem || !isEditMode) return;
+    const lockInfo = checkIsLocked(draggedItem.classId, targetDay, targetPeriod);
+    if (lockInfo) return alert(`無法調動：此時段為「${lockInfo.desc}」禁區。`);
+    analyzeMove(draggedItem, targetDay, targetPeriod);
+  };
+
+  const executeFinalAdopt = async () => {
+    if (!isAdmin) return; const moves = previewProposal.actions; setPreviewProposal(null); setProposals([]); 
+    const nextSchedules = [...schedules];
+    moves.forEach(m => { const idx = nextSchedules.findIndex(s => s.id === m.id); if (idx !== -1) nextSchedules[idx] = { ...nextSchedules[idx], day: m.d, period: m.p }; });
+    setDbData(prev => ({ ...prev, schedules: nextSchedules })); setIsEditMode(false);
+    try { await setDoc(doc(db, "schools", currentSchool.id), { ...dbData, schedules: nextSchedules, constraints: constraints }); } catch (e) { alert("失敗"); }
+  };
+
   const handleFileUpload = (e) => {
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
         const workbook = XLSX.read(new Uint8Array(event.target.result), { type: 'array' });
-        const newSchedules = []; const newTeachers = []; const newConstraints = []; const newDomainWarnings = []; 
-        const teacherCache = {}; const classSet = new Set(); const scheduleCheck = new Set(); const nativeTeachersNames = new Set();
+        const newSchedules = [], newTeachers = [], newConstraints = [], newDomainWarnings = []; 
+        const teacherCache = {}, classSet = new Set(), scheduleCheck = new Set(), nativeTeachersNames = new Set();
         const dayMap = { '週一': 0, '週二': 1, '週三': 2, '週四': 3, '週五': 4 };
         const pLabMap = { '第1節': 1, '第2節': 2, '第3節': 3, '第4節': 4, '第5節': 6, '第6節': 7, '第7節': 8, '第8節': 9 };
         const pMap = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 6, 6: 7, 7: 8, 8: 9 };
         workbook.SheetNames.forEach(sheetName => {
           const json = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
           if (sheetName.includes("本土語")) json.forEach(r => { if(r['老師姓名']) nativeTeachersNames.add(String(r['老師姓名']).trim()); });
-          if (sheetName === "領域時間") { json.forEach(row => { const domain = String(row['領域'] || '').trim(); const d = dayMap[String(row['星期']).trim()]; const p = pLabMap[String(row['節次']).trim()]; if (domain && d !== undefined && p !== undefined) newDomainWarnings.push({ domain, day: d, period: p, desc: (domain === "導師" || domain === "團體活動" || domain === "輔導課") ? domain : "領域時間" }); }); }
-          else if (sheetName === "禁區設定") { json.forEach((row, idx) => { const typeRaw = String(row['類型'] || ''); if (!typeRaw) return; let type = 'classes'; let target = typeRaw; if (typeRaw.includes('全校')) type = 'all'; else if (typeRaw.includes('高一')) { type = 'grade'; target = '1'; } else if (typeRaw.includes('高二')) { type = 'grade'; target = '2'; } else if (typeRaw.includes('高三')) { type = 'grade'; target = '3'; } newConstraints.push({ id: `C${idx}-${Date.now()}`, type, target: String(target), days: [dayMap[String(row['星期']).trim()] ?? 0], periods: [pLabMap[String(row['節次']).trim()] ?? 1], desc: String(row['說明'] || '') }); }); }
-          else { json.forEach(row => { const tName = String(row['老師姓名'] || '').trim(); if (!tName || tName === 'nan') return; if (!teacherCache[tName]) { const adminRole = String(row['行政職稱'] || ''); teacherCache[tName] = { id: `T${newTeachers.length+1}`, name: tName, order: parseInt(row['編號'])||999, domain: String(row['領域']||''), subject: String(row['學科']||''), adminRole: adminRole==='nan'?'':adminRole, isAdjunct: adminRole.includes('兼課'), isHomeroom: row['是否導師']==='是', teachesNative: nativeTeachersNames.has(tName) }; newTeachers.push(teacherCache[tName]); } const d = dayMap[String(row['星期'])]; const p = pMap[Number(row['節次'])]; if (d!==undefined && p!==undefined) { const key = `${tName}-${d}-${p}`; if (!scheduleCheck.has(key)) { const cId = String(row['班級']||'').trim(); if (cId && cId !== '未知' && cId !== 'nan') classSet.add(cId); newSchedules.push({ id: `S${newSchedules.length}`, teacherName: tName, classId: cId, subject: String(row['表原始名稱'] || row['課表原始名稱'] || '課程'), day: d, period: p }); scheduleCheck.add(key); } } }); }
+          if (sheetName === "領域時間") { json.forEach(row => { const domain = String(row['領域'] || '').trim(), d = dayMap[String(row['星期']).trim()], p = pLabMap[String(row['節次']).trim()]; if (domain && d !== undefined && p !== undefined) newDomainWarnings.push({ domain, day: d, period: p, desc: (domain === "導師" || domain === "團體活動" || domain === "輔導課") ? domain : "領域時間" }); }); }
+          else if (sheetName === "禁區設定") { json.forEach((row, idx) => { const typeRaw = String(row['類型'] || ''); if (!typeRaw) return; let type = 'classes', target = typeRaw; if (typeRaw.includes('全校')) type = 'all'; else if (typeRaw.includes('高一')) { type = 'grade', target = '1'; } else if (typeRaw.includes('高二')) { type = 'grade', target = '2'; } else if (typeRaw.includes('高三')) { type = 'grade', target = '3'; } newConstraints.push({ id: `C${idx}-${Date.now()}`, type, target: String(target), days: [dayMap[String(row['星期']).trim()] ?? 0], periods: [pLabMap[String(row['節次']).trim()] ?? 1], desc: String(row['說明'] || '') }); }); }
+          else { json.forEach(row => { const tName = String(row['老師姓名'] || '').trim(); if (!tName || tName === 'nan') return; if (!teacherCache[tName]) { const adminRole = String(row['行政職稱'] || ''); teacherCache[tName] = { id: `T${newTeachers.length+1}`, name: tName, order: parseInt(row['編號'])||999, domain: String(row['領域']||''), subject: String(row['學科']||''), adminRole: adminRole==='nan'?'':adminRole, isAdjunct: adminRole.includes('兼課'), isHomeroom: row['是否導師']==='是', teachesNative: nativeTeachersNames.has(tName) }; newTeachers.push(teacherCache[tName]); } const d = dayMap[String(row['星期'])], p = pMap[Number(row['節次'])]; if (d!==undefined && p!==undefined) { const key = `${tName}-${d}-${p}`; if (!scheduleCheck.has(key)) { const cId = String(row['班級']||'').trim(); if (cId && cId !== '未知' && cId !== 'nan') classSet.add(cId); newSchedules.push({ id: `S${newSchedules.length}`, teacherName: tName, classId: cId, subject: String(row['表原始名稱'] || row['課表原始名稱'] || '課程'), day: d, period: p }); scheduleCheck.add(key); } } }); }
         });
         const finalClasses = Array.from(classSet).sort().map(c => ({ id: c, name: `${c}班`, grade: `高${c[0]}` }));
         await setDoc(doc(db, "schools", currentSchool.id), { teachers: newTeachers, schedules: newSchedules, classes: finalClasses, constraints: newConstraints, domainWarnings: newDomainWarnings, isApplyEnabled: true, isSimEnabled: true });
@@ -333,30 +343,6 @@ export default function MainSystem() {
 
   const handleAdminLogin = () => { if (loginPassword === SCHOOL_LIST[0].password) { setIsAdmin(true); setCurrentSchool(SCHOOL_LIST[0]); setShowLoginModal(false); setLandingStage(2); } else alert("密碼錯誤"); };
 
-  const handleDrop = (targetDay, targetPeriod) => {
-    if (!draggedItem || !isEditMode) return;
-    const lockInfo = checkIsLocked(draggedItem.classId, targetDay, targetPeriod);
-    if (lockInfo) return alert(`無法調動：此時段為「${lockInfo.desc}」禁區。`);
-    analyzeMove(draggedItem, targetDay, targetPeriod);
-  };
-
-  const executeFinalAdopt = async () => {
-    if (!isAdmin) return; const moves = previewProposal.actions; setPreviewProposal(null); setProposals([]); 
-    const nextSchedules = [...schedules];
-    moves.forEach(m => { const idx = nextSchedules.findIndex(s => s.id === m.id); if (idx !== -1) nextSchedules[idx] = { ...nextSchedules[idx], day: m.d, period: m.p }; });
-    setDbData(prev => ({ ...prev, schedules: nextSchedules })); setIsEditMode(false);
-    try { await setDoc(doc(db, "schools", currentSchool.id), { ...dbData, schedules: nextSchedules, constraints: constraints }); } catch (e) { alert("失敗"); }
-  };
-
-  const toggleMain = (key) => { setActiveMainKey(prev => prev === key ? null : key); setActiveSubKey(null); };
-  const toggleSub = (e, key) => { e.stopPropagation(); setActiveSubKey(prev => prev === key ? null : key); };
-
-  const getCellDataFn = (dayIdx, periodId) => {
-    if (sidebarMode === 'teacher' && selectedTeacher) return schedules.filter(s => s.teacherName === selectedTeacher.name && s.day === dayIdx && s.period === periodId).slice(0, 1);
-    if (sidebarMode === 'class' && selectedClass) return schedules.filter(s => s.classId === selectedClass.id && s.day === dayIdx && s.period === periodId).slice(0, 1);
-    return [];
-  };
-
   const handleCellDoubleClick = (item) => {
     if (isManualSwapMode) return; 
     if (sidebarMode === 'teacher') {
@@ -366,6 +352,15 @@ export default function MainSystem() {
       const targetTeacher = teachers.find(t => t.name === item.teacherName);
       if (targetTeacher) { setSidebarMode('teacher'); setSelectedTeacher(targetTeacher); setSelectedClass(null); setActiveView('schedule'); }
     }
+  };
+
+  const toggleMain = (key) => { setActiveMainKey(prev => prev === key ? null : key); setActiveSubKey(null); };
+  const toggleSub = (e, key) => { e.stopPropagation(); setActiveSubKey(prev => prev === key ? null : key); };
+
+  const getCellDataFn = (dayIdx, periodId) => {
+    if (sidebarMode === 'teacher' && selectedTeacher) return schedules.filter(s => s.teacherName === selectedTeacher.name && s.day === dayIdx && s.period === periodId).slice(0, 1);
+    if (sidebarMode === 'class' && selectedClass) return schedules.filter(s => s.classId === selectedClass.id && s.day === dayIdx && s.period === periodId).slice(0, 1);
+    return [];
   };
 
   // ----------------------------------------------------------------
@@ -391,13 +386,12 @@ export default function MainSystem() {
           <div key={p.id} className={`grid grid-cols-6 border-b border-slate-400 last:border-b-0 ${p.isRest ? 'h-4 bg-slate-50' : 'h-11'}`}>
             <div className="text-sm flex items-center justify-center border-r border-slate-400 bg-slate-50 font-black text-slate-700 leading-none">{p.isRest ? '' : p.label.replace(/[^0-9]/g, '')}</div>
             {!p.isRest && DAYS.map((_, dIdx) => {
-              const moveOut = moves.find(m => m.t === teacherName && m.oldD === dIdx && m.oldP === p.id);
-              const moveIn = moves.find(m => m.t === teacherName && m.d === dIdx && m.p === p.id);
+              const moveOut = moves.find(m => m.t === teacherName && m.oldD === dIdx && m.oldP === p.id), moveIn = moves.find(m => m.t === teacherName && m.d === dIdx && m.p === p.id);
               const originalItem = schedules.find(s => s.teacherName === teacherName && s.day === dIdx && s.period === p.id);
               const warning = moveIn ? getSlotWarning(teacherName, dIdx, p.id) : null;
               let bgColor = "bg-white", content = "";
-              if (moveOut) { bgColor = "bg-red-50"; content = <XCircle size={14} className="text-red-400"/>; }
-              else if (moveIn) { bgColor = "bg-green-100 ring-2 ring-green-500 ring-inset"; content = (<div className="flex flex-col items-center justify-center leading-none text-slate-900"><span className="font-black text-green-900 text-base">{moveIn.c}</span><span className="text-[10px] text-green-700 font-black scale-90 mt-0.5 font-sans">新入</span>{warning && <span className="text-[9px] text-red-600 font-black scale-90 leading-none mt-0.5">{warning}</span>}</div>); }
+              if (moveOut) { bgColor = "bg-red-50", content = <XCircle size={14} className="text-red-400"/>; }
+              else if (moveIn) { bgColor = "bg-green-100 ring-2 ring-green-500 ring-inset", content = (<div className="flex flex-col items-center justify-center leading-none text-slate-900"><span className="font-black text-green-900 text-base">{moveIn.c}</span><span className="text-[10px] text-green-700 font-black scale-90 mt-0.5 font-sans">新入</span>{warning && <span className="text-[9px] text-red-600 font-black scale-90 leading-none mt-0.5">{warning}</span>}</div>); }
               else if (originalItem) { content = <span className="text-slate-700 font-black text-xs">{originalItem.classId}</span>; }
               return <div key={dIdx} className={`border-r border-slate-400 last:border-r-0 flex items-center justify-center text-center ${bgColor}`}>{content}</div>;
             })}
@@ -413,9 +407,14 @@ export default function MainSystem() {
         <div className="bg-white rounded-[4rem] shadow-2xl border-[6px] border-[#fbda8b] p-20 text-center animate-in zoom-in duration-700 max-w-4xl w-[90%]">
           <h1 className="text-9xl font-black text-[#1e3a8a] mb-10 tracking-tighter leading-none font-sans">天才小調手</h1>
           <p className="text-4xl font-bold text-[#3b82f6] tracking-[0.25em] mb-16 uppercase leading-none font-sans">智慧調課系統</p>
-          <button onClick={() => setLandingStage(1)} className="bg-[#fbda8b] hover:bg-[#f9cf6a] text-[#1e3a8a] px-14 py-7 rounded-[2.5rem] text-4xl font-black shadow-xl transition-all flex items-center gap-5 mx-auto active:scale-95 font-sans font-black">點擊進入 <ArrowRight size={40} /></button>
+          <button onClick={() => setLandingStage(1)} className="bg-[#fbda8b] hover:bg-[#f9cf6a] text-[#1e3a8a] px-14 py-7 rounded-[2.5rem] text-4xl font-black shadow-xl transition-all flex items-center gap-5 mx-auto active:scale-95 font-sans">點擊進入 <ArrowRight size={40} /></button>
         </div>
-        <div className="mt-12 text-slate-400 font-bold text-base tracking-widest uppercase font-sans">© {currentYear} 天才小調手 X 耀毅. All Rights Reserved.</div>
+        <div className="mt-12 flex flex-col items-center gap-4">
+            <div className="flex items-center gap-2 text-slate-500 font-black text-lg bg-white/80 px-6 py-2 rounded-full shadow-sm border border-slate-200">
+                <Globe size={20} className="text-blue-500 animate-pulse" /> 累積訪問次數：<span className="text-blue-700 font-black font-sans">{visitCount.toLocaleString()}</span>
+            </div>
+            <div className="text-slate-400 font-bold text-base tracking-widest uppercase font-sans">© {currentYear} 天才小調手 X 耀毅. All Rights Reserved.</div>
+        </div>
       </div>
     );
   }
@@ -423,24 +422,24 @@ export default function MainSystem() {
   if (landingStage === 1) {
     return (
       <div className="flex flex-col h-screen w-full bg-[#f1f5f9] items-center justify-center overflow-hidden font-sans text-slate-900">
-        <div className="bg-white rounded-[3.5rem] shadow-2xl border-2 border-slate-200 p-16 text-center animate-in slide-in-from-bottom-8 duration-700 max-w-lg w-full mx-4 relative overflow-hidden font-black">
+        <div className="bg-white rounded-[3.5rem] shadow-2xl border-2 border-slate-200 p-16 text-center animate-in slide-in-from-bottom-8 duration-700 max-w-lg w-full relative overflow-hidden font-black">
           <div className="absolute top-0 left-0 w-full h-3 bg-[#1e40af]"></div>
           <School size={80} className="mx-auto text-[#1e3a8a] mb-8 mt-4" />
-          <h3 className="text-5xl font-black text-slate-800 mb-12 tracking-tight font-serif text-slate-900">鳳山高級中學</h3>
-          <div className="flex flex-col gap-6 font-black">
-            <button onClick={() => { setIsAdmin(false); setCurrentSchool(SCHOOL_LIST[0]); setLandingStage(2); }} className="w-full bg-[#1e40af] text-white py-6 rounded-3xl font-black text-2xl hover:bg-blue-900 transition-all shadow-xl active:scale-[0.98]">直接進入 (檢視用)</button>
+          <h3 className="text-5xl font-black text-slate-800 mb-12 tracking-tight font-serif">鳳山高級中學</h3>
+          <div className="flex flex-col gap-6">
+            <button onClick={() => { setIsAdmin(false); setCurrentSchool(SCHOOL_LIST[0]); setLandingStage(2); }} className="w-full bg-[#1e40af] text-white py-6 rounded-3xl font-black text-2xl hover:bg-blue-900 shadow-xl transition-all active:scale-[0.98]">直接進入 (檢視用)</button>
             <button onClick={() => setShowLoginModal(true)} className="w-full bg-white text-[#1e40af] border-4 border-[#1e40af] py-6 rounded-3xl font-black text-2xl hover:bg-blue-50 transition-all active:scale-[0.98]">管理員登入</button>
           </div>
           <button onClick={() => setLandingStage(0)} className="mt-10 text-slate-400 font-bold text-lg hover:text-slate-600 transition-colors flex items-center justify-center gap-2 mx-auto">← 返回首頁</button>
         </div>
         {showLoginModal && (
-            <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center z-50 p-6 animate-in fade-in duration-300 font-black text-slate-900">
-                <div className="bg-white rounded-[3rem] p-12 max-w-md w-full shadow-2xl border-4 border-[#1e40af] relative">
-                    <button onClick={() => setShowLoginModal(false)} className="absolute top-8 right-8 text-slate-300 hover:text-slate-600 font-black"><X size={32}/></button>
+            <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center z-50 p-6 animate-in fade-in duration-300">
+                <div className="bg-white rounded-[3rem] p-12 max-w-md w-full shadow-2xl border-4 border-[#1e40af] relative font-black">
+                    <button onClick={() => setShowLoginModal(false)} className="absolute top-8 right-8 text-slate-300 hover:text-slate-600"><X size={32}/></button>
                     <div className="w-20 h-20 bg-blue-100 text-[#1e40af] rounded-3xl flex items-center justify-center mb-8 mx-auto"><Lock size={40}/></div>
-                    <h3 className="text-3xl font-black text-center text-slate-800 mb-4 font-serif text-slate-900">管理員驗證</h3>
+                    <h3 className="text-3xl font-black text-center text-slate-800 mb-4 font-serif">管理員驗證</h3>
                     <input type="password" autoFocus className="w-full p-5 bg-slate-100 rounded-2xl border-none text-center text-2xl font-black focus:ring-4 mb-8 text-slate-900" placeholder="••••" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()} />
-                    <button onClick={handleAdminLogin} className="w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl hover:bg-blue-900 font-serif font-black">確認登入</button>
+                    <button onClick={handleAdminLogin} className="w-full bg-[#1e40af] text-white py-5 rounded-2xl font-black text-xl hover:bg-blue-900 font-serif">確認登入</button>
                 </div>
             </div>
         )}
@@ -452,15 +451,15 @@ export default function MainSystem() {
     <div className="flex h-screen w-full bg-[#f1f5f9] text-slate-900 overflow-hidden font-serif font-black">
       <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20 shrink-0 font-sans text-slate-900">
         <div className="p-6 bg-[#1e3a8a] text-white shrink-0 font-black">
-          <button onClick={() => { setLandingStage(1); setSelectedTeacher(null); setSelectedClass(null); }} className="text-xs font-black uppercase tracking-widest text-slate-300 hover:text-white flex items-center gap-1 mb-2 transition-colors underline underline-offset-4 leading-none text-slate-300 font-sans">← 切換學校</button>
+          <button onClick={() => { setLandingStage(1); setSelectedTeacher(null); setSelectedClass(null); }} className="text-xs font-black uppercase tracking-widest text-slate-300 hover:text-white flex items-center gap-1 mb-2 transition-colors underline underline-offset-4 leading-none font-sans">← 切換學校</button>
           <h1 className="text-2xl font-black flex items-center gap-2 tracking-tight leading-tight font-serif text-white"><Calendar size={28} className="text-white"/> {currentSchool?.name}</h1>
         </div>
-        <div className="flex p-2 bg-slate-100 border-b border-slate-300 shrink-0 text-slate-900">
+        <div className="flex p-2 bg-slate-100 border-b border-slate-300 shrink-0">
           <button onClick={() => setSidebarMode('teacher')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'teacher' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500 hover:bg-slate-200'}`}>教師列表</button>
           <button onClick={() => setSidebarMode('class')} className={`flex-1 py-3 rounded-lg text-base font-black transition-all ${sidebarMode === 'class' ? 'bg-white shadow-md text-blue-700' : 'text-slate-500 hover:bg-slate-200'}`}>班級列表</button>
         </div>
-        <div className="p-4 border-b border-slate-300 bg-white shrink-0 text-slate-900 font-sans"><div className="relative"><Search className="absolute left-3 top-3 text-slate-400" size={20} /><input type="text" placeholder="搜尋..." className="w-full pl-11 pr-4 py-3 bg-slate-100 border-none rounded-xl text-base font-bold outline-none placeholder-slate-400 text-slate-900" onChange={(e) => setSearchTerm(e.target.value)} /></div></div>
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 bg-white text-slate-900 font-serif">
+        <div className="p-4 border-b border-slate-300 bg-white shrink-0"><div className="relative"><Search className="absolute left-3 top-3 text-slate-400" size={20} /><input type="text" placeholder="搜尋..." className="w-full pl-11 pr-4 py-3 bg-slate-100 border-none rounded-xl text-base font-bold outline-none placeholder-slate-400 text-slate-900" onChange={(e) => setSearchTerm(e.target.value)} /></div></div>
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 bg-white">
           {sidebarMode === 'teacher' ? (
             <div className="space-y-2 pb-10">
               {SIDEBAR_ORDER.map(key => {
@@ -470,7 +469,7 @@ export default function MainSystem() {
                   const isExpanded = activeMainKey === key || searchTerm !== '';
                   return (
                     <div key={key}>
-                      <button onClick={() => toggleMain(key)} className="w-full flex items-center justify-between p-4 hover:bg-slate-100 rounded-xl group font-black text-lg text-slate-800 leading-none text-slate-900"><div className="flex items-center gap-3"><BookOpen size={20} className="text-blue-600"/>{key === '本土語' ? key : key + '科'}</div>{isExpanded ? <ChevronDown size={20}/> : <ChevronRight size={20}/>}</button>
+                      <button onClick={() => toggleMain(key)} className="w-full flex items-center justify-between p-4 hover:bg-slate-100 rounded-xl group font-black text-lg text-slate-800 leading-none"><div className="flex items-center gap-3"><BookOpen size={20} className="text-blue-600"/>{key === '本土語' ? key : key + '科'}</div>{isExpanded ? <ChevronDown size={20}/> : <ChevronRight size={20}/>}</button>
                       {isExpanded && <div className="ml-7 border-l-2 border-slate-200 pl-3 mt-1">{filtered.map(t => <TeacherItem key={t.id} t={t}/>)}</div>}
                     </div>
                   );
@@ -483,8 +482,8 @@ export default function MainSystem() {
                       {isExpanded && <div className="p-2 space-y-1">{Object.entries(domains).map(([sub, subMembers]) => {
                         const isSubExp = activeSubKey === (key + sub) || searchTerm !== '';
                         const filteredSub = subMembers.filter(m => m.name.includes(searchTerm)); if (filteredSub.length === 0 && searchTerm) return null;
-                        return (<div key={sub}><button onClick={(e) => toggleSub(e, key + sub)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-white rounded-xl text-base font-black text-slate-600 shadow-sm border border-transparent leading-none text-slate-900"><span>{sub}</span>{isSubExp ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}</button>
-                          {isSubExp && <div className="ml-4 border-l-2 border-slate-200 pl-2 mt-1 text-slate-900">{filteredSub.map(t => <TeacherItem key={t.id} t={t}/>)}</div>}</div>);
+                        return (<div key={sub}><button onClick={(e) => toggleSub(e, key + sub)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-white rounded-xl text-base font-black text-slate-600 shadow-sm border border-transparent leading-none"><span>{sub}</span>{isSubExp ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}</button>
+                          {isSubExp && <div className="ml-4 border-l-2 border-slate-200 pl-2 mt-1">{filteredSub.map(t => <TeacherItem key={t.id} t={t}/>)}</div>}</div>);
                       })}</div>}
                     </div>
                   );
@@ -505,12 +504,19 @@ export default function MainSystem() {
             </div>
           )}
         </div>
-        {isAdmin && (
-          <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0 flex flex-col gap-2 text-slate-900 font-sans">
-            <button onClick={handleFileExport} className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl cursor-pointer hover:border-green-500 hover:bg-green-50 group shadow-sm leading-none"><Download className="text-slate-400 group-hover:scale-110 transition-all" size={24} /><span className="font-black text-slate-600">配課表匯出</span></button>
-            <label className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl cursor-pointer hover:border-blue-500 hover:bg-blue-50 group shadow-sm leading-none"><Settings className="text-slate-400 group-hover:rotate-90 transition-all" size={24} /><span className="font-black text-slate-600">配課表匯入</span><input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} /></label>
-          </div>
-        )}
+        
+        <div className="p-4 border-t border-slate-200 bg-slate-50 shrink-0 flex flex-col gap-3 text-slate-900 font-sans">
+            <div className="flex items-center justify-center gap-2 py-2 bg-white rounded-xl border border-slate-200 shadow-inner">
+                <Eye size={16} className="text-blue-500" />
+                <span className="text-xs font-black text-slate-500">累積訪問：<span className="text-blue-700">{visitCount.toLocaleString()}</span> 次</span>
+            </div>
+            {isAdmin && (
+                <>
+                <button onClick={handleFileExport} className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl cursor-pointer hover:border-green-500 hover:bg-green-50 group shadow-sm leading-none"><Download className="text-slate-400 group-hover:scale-110 transition-all" size={24} /><span className="font-black text-slate-600">配課表匯出</span></button>
+                <label className="flex items-center gap-3 px-4 py-3 bg-white border-2 border-slate-200 rounded-2xl cursor-pointer hover:border-blue-500 hover:bg-blue-50 group shadow-sm leading-none"><Settings className="text-slate-400 group-hover:rotate-90 transition-all" size={24} /><span className="font-black text-slate-600">配課表匯入</span><input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} /></label>
+                </>
+            )}
+        </div>
       </aside>
 
       <main className="flex-1 flex flex-col h-screen overflow-hidden bg-slate-50 text-slate-900 font-serif">
@@ -550,7 +556,7 @@ export default function MainSystem() {
                 <div className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-8 relative flex flex-col gap-6 overflow-hidden">
                     <div className="absolute left-0 top-0 bottom-0 w-3 bg-blue-600"></div>
                     <div className="flex items-center justify-between"><div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${dbData.isSimEnabled ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}><Zap size={28} /></div><button onClick={() => handleToggleState('isSimEnabled')} className={`p-1 rounded-full transition-all w-24 relative ${dbData.isSimEnabled ? 'bg-blue-600' : 'bg-slate-300'}`}><div className={`w-10 h-10 bg-white rounded-full shadow-md flex items-center justify-center transform transition-transform ${dbData.isSimEnabled ? 'translate-x-12' : 'translate-x-0'}`}>{dbData.isSimEnabled ? <ToggleRight className="text-blue-600" /> : <ToggleLeft className="text-slate-400" />}</div></button></div>
-                    <div><h3 className="text-2xl font-black flex items-center gap-2 font-serif">模擬功能管理 {dbData.isSimEnabled ? <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full">開放</span> : <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full">鎖定</span>}</h3><p className="text-slate-400 font-bold text-sm mt-1 leading-relaxed leading-relaxed">關閉後，一般老師的「模擬調課」按鈕將會鎖定。</p></div>
+                    <div><h3 className="text-2xl font-black flex items-center gap-2 font-serif">模擬功能管理 {dbData.isSimEnabled ? <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full">開放</span> : <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full">鎖定</span>}</h3><p className="text-slate-400 font-bold text-sm mt-1 leading-relaxed">關閉後，一般老師的「模擬調課」按鈕將會鎖定。</p></div>
                 </div>
               </div>
               <div id="rule-form" className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-10 relative text-slate-900 font-serif">
@@ -565,11 +571,10 @@ export default function MainSystem() {
                 </div>
               </div>
 
-              {/* 已設定的排課規則清單 */}
               <div className="bg-white rounded-[2rem] shadow-xl border-2 border-slate-200 p-10 font-serif">
                 <h3 className="text-3xl font-black text-slate-800 mb-8 flex items-center gap-3"><ListChecks size={32} className="text-blue-600"/> 目前排課規則</h3>
                 {constraints.length === 0 ? <p className="text-slate-400 font-bold text-lg text-center py-10">目前尚未設定任何禁區規則。</p> : (
-                  <div className="space-y-4">
+                  <div className="space-y-4 font-sans">
                     {constraints.map(rule => (
                       <div key={rule.id} className="flex items-center justify-between p-6 bg-slate-50 rounded-2xl border-2 border-slate-100 hover:border-blue-200 transition-all group">
                         <div className="flex gap-6 items-center">
@@ -593,24 +598,22 @@ export default function MainSystem() {
         ) : (
           <div className="flex-1 p-4 lg:p-8 flex flex-col min-h-0 overflow-hidden bg-slate-50 text-slate-900 font-serif">
             {isLoading ? <div className="flex-1 flex items-center justify-center text-2xl font-black text-slate-300 animate-pulse font-sans">連線中...</div> : 
-            <div className="flex-1 bg-white rounded-[2.5rem] shadow-2xl border-2 border-slate-300 overflow-hidden flex flex-col font-serif">
+            <div className="flex-1 bg-white rounded-[2.5rem] shadow-2xl border-2 border-slate-300 overflow-hidden flex flex-col">
               <div className="grid grid-cols-6 bg-[#1e293b] text-white shrink-0 border-b-2 border-slate-600 leading-none font-sans">
                 <div className="p-4 text-center text-[11px] font-black border-r border-slate-600 uppercase tracking-widest leading-relaxed">節次</div>
                 {DAYS.map(day => <div key={day} className="p-4 text-center font-black text-xl border-r border-slate-600 last:border-r-0 leading-relaxed tracking-wider">{day}</div>)}
               </div>
-              <div className="flex-1 flex flex-col min-h-0 overflow-hidden text-slate-900">
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                 {PERIODS.map(period => (
                   <div key={period.id} className={`grid grid-cols-6 border-b-2 border-slate-300 last:border-b-0 flex-1 min-h-0 ${period.isRest ? 'bg-slate-100 flex-none h-14' : ''}`}>
-                    <div className="flex flex-col items-center justify-center border-r-2 border-slate-300 bg-slate-50/80 shrink-0 font-sans text-slate-900">
+                    <div className="flex flex-col items-center justify-center border-r-2 border-slate-300 bg-slate-50/80 shrink-0 font-sans">
                       <span className="font-black text-slate-800 text-xl leading-none">{period.label}</span>
                       <span className="text-[10px] text-slate-500 font-bold mt-1 tracking-tighter leading-none">{period.time}</span>
                     </div>
                     {period.isRest ? <div className="col-span-5 flex items-center justify-center text-slate-400 text-sm font-black tracking-[3em] uppercase bg-slate-100/50 italic leading-none font-sans">午 休 時 間</div> : 
                       DAYS.map((_, dIdx) => {
-                        const items = getCellDataFn(dIdx, period.id);
-                        const currentClassId = sidebarMode === 'class' ? selectedClass?.id : items[0]?.classId;
-                        const lockRule = checkIsLocked(currentClassId, dIdx, period.id);
-                        const swapIdx = swapQueue.findIndex(q => q.day === dIdx && q.period === period.id);
+                        const items = getCellDataFn(dIdx, period.id), currentClassId = sidebarMode === 'class' ? selectedClass?.id : items[0]?.classId;
+                        const lockRule = checkIsLocked(currentClassId, dIdx, period.id), swapIdx = swapQueue.findIndex(q => q.day === dIdx && q.period === period.id);
                         return (
                           <div key={dIdx} onClick={() => isManualSwapMode && handleManualSlotClick(dIdx, period.id, items[0])} onDragOver={e => e.preventDefault()} onDrop={() => isEditMode && handleDrop(dIdx, period.id)} className={`border-r-2 border-slate-300 last:border-r-0 flex flex-col items-center justify-center text-center transition-all relative overflow-hidden ${lockRule ? 'bg-slate-50 cursor-not-allowed' : 'bg-white'} ${isEditMode && !lockRule ? 'hover:bg-blue-50/30' : ''} ${isManualSwapMode && !lockRule ? 'cursor-pointer hover:bg-green-50 ring-inset' : ''} ${swapIdx !== -1 ? 'ring-4 ring-green-500 z-10 bg-green-50/50' : ''}`}>
                             {swapIdx !== -1 && <div className="absolute top-2 left-2 w-7 h-7 bg-green-600 text-white rounded-full flex items-center justify-center font-black text-xs shadow-lg animate-in zoom-in duration-200">{swapIdx + 1}</div>}
@@ -618,7 +621,7 @@ export default function MainSystem() {
                             {lockRule ? <div className="flex flex-col items-center gap-1 opacity-70 px-1 text-slate-500"><Lock size={22}/><span className="text-[14px] font-black uppercase tracking-tighter truncate max-w-full font-sans text-center">{lockRule.desc}</span></div> : 
                               items.map((item, idx) => (
                                 <div key={idx} onDoubleClick={() => handleCellDoubleClick(item)} draggable={isEditMode} onDragStart={() => setDraggedItem(item)} className={`w-full px-1 flex flex-col items-center justify-center select-none ${isEditMode ? 'cursor-grab active:cursor-grabbing hover:scale-105 transition-transform' : ''}`}>
-                                  {sidebarMode === 'teacher' ? (<><div className="font-black text-blue-900 text-3xl tracking-tighter mb-1 font-sans">{item.classId!=="未知"?item.classId:""}</div><div className="px-3 py-1 bg-blue-900 text-white text-[11px] font-black rounded-lg shadow-sm font-sans uppercase truncate max-w-full">{item.subject}</div></>) : (<div className="w-full flex flex-col items-center px-1"><div className="font-black text-slate-800 text-lg md:text-xl lg:text-2xl tracking-tighter leading-tight mb-1 truncate max-w-full font-sans text-center">{item.subject}</div><div className="px-2 py-0.5 bg-slate-800 text-white text-[10px] font-black rounded-md shadow-sm opacity-90 font-sans truncate max-w-[90%] text-center">{item.teacherName}</div></div>)}
+                                  {sidebarMode === 'teacher' ? (<><div className="font-black text-blue-900 text-3xl tracking-tighter mb-1 font-sans">{item.classId!=="未知"?item.classId:""}</div><div className="px-3 py-1 bg-blue-900 text-white text-[11px] font-black rounded-lg shadow-sm font-sans uppercase truncate max-w-full">{item.subject}</div></>) : (<div className="w-full flex flex-col items-center px-1 font-sans"><div className="font-black text-slate-800 text-lg md:text-xl lg:text-2xl tracking-tighter leading-tight mb-1 truncate max-w-full text-center">{item.subject}</div><div className="px-2 py-0.5 bg-slate-800 text-white text-[10px] font-black rounded-md shadow-sm opacity-90 truncate max-w-[90%] text-center">{item.teacherName}</div></div>)}
                                 </div>
                               ))}
                           </div>
@@ -636,38 +639,38 @@ export default function MainSystem() {
 
       {proposals.length > 0 && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[60] p-4 font-sans overflow-hidden text-slate-900">
-          <div className="bg-[#f8fafc] rounded-[3.5rem] shadow-2xl border-4 border-blue-900 w-full max-w-6xl h-[95vh] flex flex-col overflow-hidden animate-in zoom-in duration-300">
-            <div className="py-3 px-6 bg-white border-b-2 border-slate-200 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-3"><div className="w-10 h-10 bg-blue-50 text-blue-900 rounded-xl flex items-center justify-center shadow-inner font-black"><GitBranch size={22}/></div><div><h3 className="text-xl font-black text-slate-800">{isAdmin ? '智慧調課預覽分析' : '模擬調課結果預覽'}</h3><p className="text-slate-400 font-bold text-xs">分析已完成</p></div></div>
-              <button onClick={() => { setProposals([]); setPreviewProposal(null); }} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all font-black"><X size={24}/></button>
+          <div className="bg-[#f8fafc] rounded-[3.5rem] shadow-2xl border-4 border-blue-900 w-full max-w-6xl h-[95vh] flex flex-col overflow-hidden animate-in zoom-in duration-300 font-sans">
+            <div className="py-3 px-6 bg-white border-b-2 border-slate-200 flex items-center justify-between shrink-0 font-black">
+              <div className="flex items-center gap-3"><div className="w-10 h-10 bg-blue-50 text-blue-900 rounded-xl flex items-center justify-center shadow-inner"><GitBranch size={22}/></div><div><h3 className="text-xl font-black text-slate-800">{isAdmin ? '智慧調課預覽分析' : '模擬調課結果預覽'}</h3><p className="text-slate-400 font-bold text-xs">分析已完成</p></div></div>
+              <button onClick={() => { setProposals([]); setPreviewProposal(null); }} className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all"><X size={24}/></button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-slate-50 flex flex-col">
               {previewProposal ? (
-                <div className="animate-in slide-in-from-right-4 duration-500 flex flex-col h-full">
+                <div className="animate-in slide-in-from-right-4 duration-500 flex flex-col h-full font-black">
                     <div ref={exportRef} className="p-4 bg-slate-50 flex flex-col gap-4">
                         <div className="bg-white p-3 rounded-2xl border-2 border-blue-600 shadow-lg shrink-0">
-                            <div className="flex items-center gap-3 mb-2"><span className="text-blue-600 font-black text-xs uppercase bg-blue-50 px-3 py-1 rounded-full border border-blue-100 font-sans">預覽方案：{previewProposal.title}</span><span className="text-orange-500 font-black text-2xl font-serif">{previewProposal.letter} 方案</span></div>
-                            <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-100 pt-2">{previewProposal.actions.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 text-slate-800 font-black text-base font-serif"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(p => p.id === act.p)?.label}</span>{warning && <span className="px-1.5 py-0.5 border border-red-500 text-red-600 text-[10px] font-black rounded bg-red-50/50 whitespace-nowrap">{warning}</span>}</div>)})}</div>
+                            <div className="flex items-center gap-3 mb-2 font-serif"><span className="text-blue-600 font-black text-xs uppercase bg-blue-50 px-3 py-1 rounded-full border border-blue-100">預覽方案：{previewProposal.title}</span><span className="text-orange-500 font-black text-2xl">{previewProposal.letter} 方案</span></div>
+                            <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-100 pt-2 font-serif">{previewProposal.actions.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 text-slate-800 font-black text-base"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(p => p.id === act.p)?.label}</span>{warning && <span className="ml-2 px-1.5 py-0.5 border border-red-500 text-red-600 text-[10px] font-black rounded bg-red-50/50 whitespace-nowrap">{warning}</span>}</div>)})}</div>
                         </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 min-h-0 text-slate-900">{Array.from(new Set(previewProposal.actions.map(a => a.t))).map(tName => (<PreviewGrid key={tName} teacherName={tName} moves={previewProposal.actions} />))}</div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 min-h-0">{Array.from(new Set(previewProposal.actions.map(a => a.t))).map(tName => (<PreviewGrid key={tName} teacherName={tName} moves={previewProposal.actions} />))}</div>
                     </div>
                     <div className="flex flex-wrap justify-center items-center gap-3 py-4 mt-auto shrink-0 border-t border-slate-200 bg-white/50 rounded-b-[2.5rem]">
-                        <button onClick={() => setPreviewProposal(null)} className="flex items-center gap-2 px-5 py-3 bg-slate-200 text-slate-600 rounded-xl font-black text-lg hover:bg-slate-300 transition-all font-sans"><ArrowRight size={20} className="rotate-180" /> 返回列表</button>
-                        <button onClick={handleSaveAsImage} className="flex items-center gap-2 px-5 py-3 bg-white text-blue-600 border-2 border-blue-200 rounded-xl font-black text-lg hover:bg-blue-50 transition-all shadow-sm font-sans"><Camera size={20} /> 另存圖片</button>
-                        {isAdmin ? (<button onClick={executeFinalAdopt} className="flex items-center gap-3 px-10 py-3.5 bg-blue-900 text-white rounded-xl font-black text-xl shadow-lg hover:bg-blue-800 hover:-translate-y-1 transition-all border-b-4 border-blue-950 font-sans">採用此方案 <CheckCircle2 size={24}/></button>) : (<div className="flex flex-col items-center px-6">{dbData.isApplyEnabled ? (<><span className="text-purple-700 font-black text-sm mb-1 uppercase tracking-widest animate-pulse font-serif">模擬完成！如需正式調動：</span><Link to="/apply" className="bg-purple-600 text-white px-8 py-3 rounded-xl font-black hover:bg-purple-700 shadow-lg transition-all flex items-center gap-2 font-serif font-black">前往填寫「自主調課表」 <ArrowRight size={20}/></Link></>) : (<div className="flex items-center gap-2 px-8 py-3 bg-slate-100 text-slate-400 rounded-xl font-black border-2 border-slate-200 font-serif"><Lock size={18} /> 目前非自主調課時段</div>)}</div>)}
-                        <button onClick={() => { setProposals([]); setPreviewProposal(null); }} className="flex items-center gap-2 px-5 py-3 bg-red-50 text-red-500 border border-red-100 rounded-xl font-black text-lg hover:bg-red-500 hover:text-white transition-all font-sans font-black"><Trash2 size={20} /> 放棄調動</button>
+                        <button onClick={() => setPreviewProposal(null)} className="flex items-center gap-2 px-5 py-3 bg-slate-200 text-slate-600 rounded-xl font-black text-lg hover:bg-slate-300 transition-all font-serif"><ArrowRight size={20} className="rotate-180" /> 返回列表</button>
+                        <button onClick={handleSaveAsImage} className="flex items-center gap-2 px-5 py-3 bg-white text-blue-600 border-2 border-blue-200 rounded-xl font-black text-lg hover:bg-blue-50 transition-all shadow-sm font-serif"><Camera size={20} /> 另存圖片</button>
+                        {isAdmin ? (<button onClick={executeFinalAdopt} className="flex items-center gap-3 px-10 py-3.5 bg-blue-900 text-white rounded-xl font-black text-xl shadow-lg hover:bg-blue-800 hover:-translate-y-1 transition-all border-b-4 border-blue-950 font-serif">採用此方案 <CheckCircle2 size={24}/></button>) : (<div className="flex flex-col items-center px-6 font-serif">{dbData.isApplyEnabled ? (<><span className="text-purple-700 font-black text-sm mb-1 uppercase tracking-widest animate-pulse">模擬完成！如需正式調動：</span><Link to="/apply" className="bg-purple-600 text-white px-8 py-3 rounded-xl font-black hover:bg-purple-700 shadow-lg transition-all flex items-center gap-2">前往填寫「自主調課表」 <ArrowRight size={20}/></Link></>) : (<div className="flex items-center gap-2 px-8 py-3 bg-slate-100 text-slate-400 rounded-xl font-black border-2 border-slate-200"><Lock size={18} /> 目前非自主調課時段</div>)}</div>)}
+                        <button onClick={() => { setProposals([]); setPreviewProposal(null); }} className="flex items-center gap-2 px-5 py-3 bg-red-50 text-red-500 border border-red-100 rounded-xl font-black text-lg hover:bg-red-500 hover:text-white transition-all font-serif font-black"><Trash2 size={20} /> 放棄調動</button>
                     </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-slate-900">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {proposals.map((p, i) => (
-                    <div key={i} className={`p-6 rounded-3xl border-2 bg-white flex flex-col justify-between transition-all shadow-lg group hover:border-blue-900 hover:shadow-2xl text-slate-900`}>
-                      <div className="flex items-start gap-4 mb-4 text-slate-900"><div className="mt-1 text-slate-900">{p.type === 'MOVE' ? <CheckCircle2 className="text-green-600" size={32} /> : p.type === 'SWAP' ? <ArrowRightLeft className="text-indigo-600" size={32} /> : p.type === 'TRIANGLE' ? <RefreshCw className="text-purple-600 animate-spin-slow" size={32} /> : <XCircle className="text-red-600" size={32} />}</div>
-                        <div className="flex-1 text-slate-900"><div className="flex justify-between items-center mb-2 font-serif font-black"><span className="font-black text-xl text-slate-800">{String.fromCharCode(65 + i)} 方案：{p.title}</span><span className={`text-[10px] font-black px-2 py-0.5 rounded-full text-white font-sans ${p.color==='blue'?'bg-blue-600':p.color==='indigo'?'bg-indigo-600':p.color==='purple'?'bg-purple-600':'bg-red-600'}`}>{p.impact}</span></div>
-                          <div className="space-y-1.5 mt-2 text-slate-900">{p.actions?.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 flex-wrap text-slate-600 font-bold text-lg font-serif font-black"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(per => per.id === act.p)?.label}</span>{warning && <span className="px-1.5 py-0.5 border border-red-500 text-red-600 text-[10px] font-black rounded bg-red-50/30 whitespace-nowrap font-sans">{warning}</span>}</div>);})}</div>
+                    <div key={i} className={`p-6 rounded-3xl border-2 bg-white flex flex-col justify-between transition-all shadow-lg group hover:border-blue-900 hover:shadow-2xl`}>
+                      <div className="flex items-start gap-4 mb-4"><div className="mt-1">{p.type === 'MOVE' ? <CheckCircle2 className="text-green-600" size={32} /> : p.type === 'SWAP' ? <ArrowRightLeft className="text-indigo-600" size={32} /> : p.type === 'TRIANGLE' ? <RefreshCw className="text-purple-600 animate-spin-slow" size={32} /> : <XCircle className="text-red-600" size={32} />}</div>
+                        <div className="flex-1"><div className="flex justify-between items-center mb-2 font-serif font-black"><span className="font-black text-xl text-slate-800">{String.fromCharCode(65 + i)} 方案：{p.title}</span><span className={`text-[10px] font-black px-2 py-0.5 rounded-full text-white font-sans ${p.color==='blue'?'bg-blue-600':p.color==='indigo'?'bg-indigo-600':p.color==='purple'?'bg-purple-600':'bg-red-600'}`}>{p.impact}</span></div>
+                          <div className="space-y-1.5 mt-2 font-serif font-black">{p.actions?.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 flex-wrap text-slate-600 font-bold text-lg"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(per => per.id === act.p)?.label}</span>{warning && <span className="px-1.5 py-0.5 border border-red-500 text-red-600 text-[10px] font-black rounded bg-red-50/50 whitespace-nowrap font-sans">{warning}</span>}</div>);})}</div>
                         </div>
                       </div>
-                      {!p.disabled && <button onClick={() => setPreviewProposal({ ...p, letter: String.fromCharCode(65 + i) })} className="mt-3 w-full bg-slate-800 text-white py-4 rounded-xl font-black text-xl hover:bg-black transition-all flex items-center justify-center gap-2 font-serif font-black text-white">預覽方案結果 <ArrowRight size={24}/></button>}
+                      {!p.disabled && <button onClick={() => setPreviewProposal({ ...p, letter: String.fromCharCode(65 + i) })} className="mt-3 w-full bg-slate-800 text-white py-4 rounded-xl font-black text-xl hover:bg-black transition-all flex items-center justify-center gap-2 font-serif">預覽方案結果 <ArrowRight size={24}/></button>}
                     </div>
                   ))}
                 </div>
