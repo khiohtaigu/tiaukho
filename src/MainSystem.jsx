@@ -143,56 +143,58 @@ export default function MainSystem() {
   }, [classes]);
 
   /**
-   * 修正後的警示判斷邏輯
-   * 確保「輔導課」、「領域時間」、「團體活動」等能被正確辨識
+   * getSlotWarning - 寫死固定規則版本
    */
   const getSlotWarning = (teacherName, dayIdx, periodId) => {
-    if (!dbData || !dbData.domainWarnings) return null;
-    const teacher = teachers.find(t => t.name === teacherName);
+    if (!teacherName) return null;
+    const teacher = teachers.find(t => String(t.name).trim() === String(teacherName).trim());
     if (!teacher) return null;
     
-    const teacherDomain = (teacher.domain || "").trim();
-    const teacherSubject = (teacher.subject || "").trim();
+    const tDom = (teacher.domain || "").trim();
+    const tSub = (teacher.subject || "").trim();
+    const combinedInfo = tDom + tSub;
 
-    const warning = dbData.domainWarnings.find(w => {
-      if (w.day !== dayIdx || w.period !== periodId) return false;
-      
-      const ruleDomain = (w.domain || "").trim();
-      const ruleDesc = (w.desc || "").trim();
+    // --- 1. 全校固定的輔導課：週一至週五 第 8 節 (程式內 ID 為 9) ---
+    if (periodId === 9) return "輔導課";
 
-      // 1. 全域性警示：團體活動、輔導課 (該時段任何老師進入都要警示)
-      if (
-        ruleDomain.includes("團體活動") || ruleDomain.includes("輔導課") ||
-        ruleDesc.includes("團體活動") || ruleDesc.includes("輔導課")
-      ) {
-        return true;
-      }
-
-      // 2. 導師警示：只有導師進入該時段才警示
-      if (ruleDomain === "導師" || ruleDesc === "導師") {
-        return teacher.isHomeroom;
-      }
-
-      // 3. 領域時間 / 學科相關警示
-      const cleanRule = ruleDomain.replace('科', '');
-      if (!cleanRule) return false;
-
-      // 比對老師的領域或學科是否包含規則中的名稱
-      const basicMatch = teacherDomain.includes(cleanRule) || 
-                         teacherSubject.includes(cleanRule) ||
-                         ruleDomain.includes(teacherDomain) ||
-                         ruleDomain.includes(teacherSubject);
-      
-      if (basicMatch) return true;
-
-      // 檢查子科目比對 (例如規則是「藝能科」，老師是「音樂」)
-      const subSubjects = DOMAIN_SUB_ORDER[ruleDomain] || 
-                          DOMAIN_SUB_ORDER[ruleDomain + '科'] || 
-                          DOMAIN_SUB_ORDER[ruleDomain.replace('科', '') + '科'] || [];
-      return subSubjects.includes(teacherSubject) || subSubjects.includes(teacherDomain);
-    });
+    // --- 2. 寫死領域時間規則 ---
     
-    return warning ? warning.desc : null;
+    // 週一 下午 5,6,7 節 (ID 6,7,8) -> 國文科
+    if (dayIdx === 0 && [6, 7, 8].includes(periodId)) {
+        if (combinedInfo.includes("國文")) return "領域時間";
+    }
+
+    // 週二 下午 5,6,7 節 (ID 6,7,8) -> 英文科
+    if (dayIdx === 1 && [6, 7, 8].includes(periodId)) {
+        if (combinedInfo.includes("英文")) return "領域時間";
+    }
+
+    // 週二 上午 1,2 節 (ID 1,2) -> 藝能科
+    if (dayIdx === 1 && [1, 2].includes(periodId)) {
+        const isArts = combinedInfo.includes("藝能") || 
+                       ["音樂", "美術", "家政", "生活科技", "資訊科技", "健護", "體育", "輔導", "全民國防"].some(s => combinedInfo.includes(s));
+        if (isArts) return "領域時間";
+    }
+
+    // 週四 上午 1,2,3,4 節 (ID 1,2,3,4) -> 自然科
+    if (dayIdx === 3 && [1, 2, 3, 4].includes(periodId)) {
+        if (combinedInfo.includes("自然") || ["物理", "化學", "生物", "地科", "地球科學"].some(s => combinedInfo.includes(s))) return "領域時間";
+    }
+
+    // 週四 下午 5,6,7 節 (ID 6,7,8) -> 數學科、社會科
+    if (dayIdx === 3 && [6, 7, 8].includes(periodId)) {
+        if (combinedInfo.includes("數學") || combinedInfo.includes("社會") || ["歷史", "地理", "公民"].some(s => combinedInfo.includes(s))) return "領域時間";
+    }
+
+    // --- 3. 團體活動 (這裡假設維持手動或資料庫，若也有固定時間可再加入) ---
+    const dbWarning = dbData.domainWarnings?.find(w => 
+        Number(w.day) === Number(dayIdx) && 
+        Number(w.period) === Number(periodId) && 
+        (w.domain?.includes("團體活動") || w.desc?.includes("團體活動"))
+    );
+    if (dbWarning) return "團體活動";
+
+    return null;
   };
 
   useEffect(() => {
@@ -876,7 +878,7 @@ export default function MainSystem() {
                     <div ref={exportRef} className="p-4 bg-slate-50 flex flex-col gap-4">
                         <div className="bg-white p-3 rounded-2xl border-2 border-blue-600 shadow-lg shrink-0">
                             <div className="flex items-center gap-3 mb-2"><span className="text-blue-600 font-black text-xs uppercase bg-blue-50 px-3 py-1 rounded-full border border-blue-100 font-sans">預覽方案：{previewProposal.title}</span><span className="text-orange-500 font-black text-2xl font-serif">{previewProposal.letter} 方案</span></div>
-                            <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-100 pt-2">{previewProposal.actions.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 text-slate-800 font-black text-base font-serif"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(p => p.id === act.p)?.label}</span>{warning && <span className="px-1.5 py-0.5 border border-orange-500 text-orange-600 text-[10px] font-black rounded bg-orange-50/50 whitespace-nowrap">{warning}</span>}</div>)})}</div>
+                            <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-100 pt-2">{previewProposal.actions.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 text-slate-800 font-black text-base font-serif"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(p => p.id === act.p)?.label}</span>{warning && <span className="ml-2 px-1.5 py-0.5 border border-red-500 text-red-600 text-[10px] font-black rounded bg-red-50/50 whitespace-nowrap">{warning}</span>}</div>)})}</div>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 min-h-0 text-slate-900">{Array.from(new Set(previewProposal.actions.map(a => a.t))).map(tName => (<PreviewGrid key={tName} teacherName={tName} moves={previewProposal.actions} />))}</div>
                     </div>
@@ -893,7 +895,7 @@ export default function MainSystem() {
                     <div key={i} className={`p-6 rounded-3xl border-2 bg-white flex flex-col justify-between transition-all shadow-lg group hover:border-blue-900 hover:shadow-2xl text-slate-900`}>
                       <div className="flex items-start gap-4 mb-4 text-slate-900"><div className="mt-1 text-slate-900">{p.type === 'MOVE' ? <CheckCircle2 className="text-green-600" size={32} /> : p.type === 'SWAP' ? <ArrowRightLeft className="text-indigo-600" size={32} /> : p.type === 'TRIANGLE' ? <RefreshCw className="text-purple-600 animate-spin-slow" size={32} /> : <XCircle className="text-red-600" size={32} />}</div>
                         <div className="flex-1 text-slate-900"><div className="flex justify-between items-center mb-2 font-serif font-black"><span className="font-black text-xl text-slate-800">{String.fromCharCode(65 + i)} 方案：{p.title}</span><span className={`text-[10px] font-black px-2 py-0.5 rounded-full text-white font-sans ${p.color==='blue'?'bg-blue-600':p.color==='indigo'?'bg-indigo-600':p.color==='purple'?'bg-purple-600':'bg-red-600'}`}>{p.impact}</span></div>
-                          <div className="space-y-1.5 mt-2 text-slate-900">{p.actions?.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 flex-wrap text-slate-600 font-bold text-lg font-serif font-black"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(per => per.id === act.p)?.label}</span>{warning && <span className="px-1.5 py-0.5 border border-orange-500 text-orange-600 text-[10px] font-black rounded bg-orange-50/30 whitespace-nowrap font-sans">{warning}</span>}</div>);})}</div>
+                          <div className="space-y-1.5 mt-2 text-slate-900">{p.actions?.map((act, idx) => { const warning = getSlotWarning(act.t, act.d, act.p); return (<div key={idx} className="flex items-center gap-2 flex-wrap text-slate-600 font-bold text-lg font-serif font-black"><span>{idx + 1}. [{act.t}] → {DAYS[act.d]} {PERIODS.find(per => per.id === act.p)?.label}</span>{warning && <span className="px-1.5 py-0.5 border border-red-500 text-red-600 text-[10px] font-black rounded bg-red-50/30 whitespace-nowrap font-sans">{warning}</span>}</div>);})}</div>
                         </div>
                       </div>
                       {!p.disabled && <button onClick={() => setPreviewProposal({ ...p, letter: String.fromCharCode(65 + i) })} className="mt-3 w-full bg-slate-800 text-white py-4 rounded-xl font-black text-xl hover:bg-black transition-all flex items-center justify-center gap-2 font-serif font-black text-white">預覽方案結果 <ArrowRight size={24}/></button>}
