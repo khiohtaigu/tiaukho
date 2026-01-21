@@ -2,26 +2,50 @@
 <html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    
+    <!-- 1. 視窗縮放控制：解決 iPhone 畫面過小與自動縮放問題，viewport-fit=cover 確保填滿瀏海螢幕 -->
+    <meta 
+      name="viewport" 
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0, viewport-fit=cover" 
+    />
+    
     <meta name="theme-color" content="#1e3a8a" />
     <meta name="description" content="智慧調課系統 - 鳳山高級中學專用版" />
     
+    <!-- 2. iOS App 模式設定：隱藏 Safari 網址列與工具列的關鍵 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="智慧調課系統">
+
     <title>智慧調課系統 - 鳳山高級中學</title>
 
     <style>
-      /* 全域宋體設定 */
+      /* 全域宋體設定 - 保留您原本的設定 */
       *, ::before, ::after {
         font-family: "Songti TC", "Noto Serif TC", "PMingLiU", "新細明體", "SimSun", serif !important;
       }
 
-      body {
+      /* 防止 iOS 橡皮筋回彈效果並確保頁面高度佔滿 */
+      html, body {
         margin: 0;
+        padding: 0;
+        height: 100%;
+        width: 100%;
         background-color: #f1f5f9;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+        overflow: hidden; /* 由 root 控制滾動，防止 Safari 工具列跳出 */
+        overscroll-behavior: none;
+        -webkit-tap-highlight-color: transparent;
       }
 
-      /* 自定義捲軸 */
+      #root {
+        height: 100%;
+        width: 100%;
+        overflow: auto;
+      }
+
+      /* 自定義捲軸 - 保留您原本的設定 */
       ::-webkit-scrollbar {
         width: 6px;
         height: 6px;
