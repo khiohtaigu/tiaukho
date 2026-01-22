@@ -15,9 +15,9 @@ const PERIODS = [
   { id: 8, label: '第7節' }, { id: 9, label: '第8節' }
 ];
 
-const SIDEBAR_ORDER = ['國文', '英文', '數學', '自然科', '社會科', '藝能科', '本土語'];
+const SIDEBAR_ORDER = ['國文科', '英文科', '數學科', '自然科', '社會科', '藝能科', '本土語'];
 // 將「本土語」加入核心科目清單，觸發自動套用邏輯
-const CORE_SUBJECTS = ['國文', '英文', '數學', '本土語'];
+const CORE_SUBJECTS = ['國文科', '英文科', '數學科', '本土語'];
 
 export default function TeacherForm() {
   const schoolId = "fssh";
